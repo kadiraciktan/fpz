@@ -161,9 +161,10 @@ Features: turntable rotation, part picking, wireframe toggle, texture preview.
 | B | Build sandbag (prep phase) |
 | Esc | Pause menu (sensitivity / volume / FOV sliders) |
 
-## Gamepad (Xbox layout)
+## Gamepad (Xbox/standard layout)
 
-Auto-detected every frame — no setup needed:
+Auto-detected every frame — connect/disconnect shows a toast, and a standard-
+mapping pad is preferred when a receiver exposes phantom pads:
 
 | Input | Action |
 |-------|--------|
@@ -174,7 +175,15 @@ Auto-detected every frame — no setup needed:
 | X / Y | Reload / Interact |
 | LB / RB | Previous / next weapon |
 | L3 | Sprint (hold) |
-| Start | Pause toggle |
+| Start | Pause / resume (also restarts after game over) |
+
+- **Menus**: D-pad / left stick moves a glowing focus ring across map cards,
+  gunsmith cards, skins and buttons — A clicks (with rumble blips). Note:
+  starting the match still needs one mouse click on the loading screen
+  (browsers only grant pointer lock on a real user gesture).
+- **Rumble**: hits, kills, pickups, purchases, wave starts, boss spawns,
+  damage and death all drive the vibration actuators (dual-rumble with a
+  `pulse()` fallback for Firefox).
 
 ## Perk Machines (CoD Zombies style)
 

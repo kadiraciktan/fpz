@@ -5,7 +5,7 @@ import { WeaponManager, createLegsMesh, ATTACHMENTS, WEAPON_DEFS, DEFAULT_LOADOU
 import { createGunsmithScreen } from './ui/gunsmith.js';
 import { Enemy } from './Enemy.js';
 import { createSandbag, createPerkMachine, markMachineSold } from './Prefabs.js';
-import { GamepadInput } from './Gamepad.js';
+import { GamepadInput, GamepadMenuNav } from './Gamepad.js';
 import { waveCount, waveParams, pickEnemyType, isBossRound, bossCount, isSprintRound, waveIntensity } from './game/waves.js';
 import { weightedPick } from './weapons/ammo.js';
 
@@ -313,6 +313,7 @@ function spawnWave() {
   weaponManager.sfx.setMusicIntensity(waveIntensity(round));
   const boss = isBossRound(round);
   const sprint = isSprintRound(round);
+  gamepad.rumble(0.4, 0.6, 220);
   showToast(
     boss ? `WAVE ${round} - PATRON!`
       : sprint ? `WAVE ${round} - SPRINT DALGASI!`
@@ -350,6 +351,7 @@ function spawnWave() {
       enemies.push(enemy);
     }
     weaponManager.sfx.zombieScream();
+    gamepad.rumble(1, 1, 500);
   }
   weaponManager.setTargets(enemies.map(e => e.group));
 }
@@ -490,6 +492,7 @@ function applyPowerUp(key) {
   if (t) {
     showToast(`${t.label} Picked`);
     weaponManager.sfx.powerUp();
+    gamepad.rumble(0.5, 0.7, 140);
   }
   if (key === 'MaxAmmo') {
     weaponManager.fillAllAmmo();
@@ -618,6 +621,7 @@ function buildGame() {
       weaponManager.sfx.enemyHit();
     },
     onEnemyKilled: (enemy, isHeadshot) => {
+      gamepad.rumble(0.25, 0.45, 70);
       addScore(Math.round(enemy.params.score * (isHeadshot ? 1.5 : 1)));
       addXp(isHeadshot ? 15 : 10);
       stats.kills++;
@@ -633,7 +637,10 @@ function buildGame() {
       else if (Math.random() < 0.25) spawnPowerUp(enemy.group.position);
     },
     // Reserve ran dry — point the player at ammo crates / MAX pickups.
-    onOutOfAmmo: () => showToast('YEDEK MERMI YOK — cephane kutusu bekle!'),
+    onOutOfAmmo: () => {
+      gamepad.rumble(0.3, 0.8, 120);
+      showToast('YEDEK MERMI YOK — cephane kutusu bekle!');
+    },
     // Noisemaker landed: every zombie nearby shambles over to investigate.
     onLure: (pos) => {
       let lured = 0;
@@ -717,6 +724,7 @@ function buildGame() {
       markMachineSold(m.mesh);
       applyPerk(m.perk.key);
       weaponManager.sfx.powerUp();
+      gamepad.rumble(0.5, 0.7, 160);
       showToast(`${m.perk.icon} ${m.perk.label} — ${m.perk.hint}`);
       return;
     }
@@ -737,6 +745,7 @@ function buildGame() {
       if (zn) zn.unlocked = true;
       weaponManager.sfx.clatter(true);
       weaponManager.sfx.powerUp();
+      gamepad.rumble(0.5, 0.7, 160);
       showToast(`🪵 Barikat kaldırıldı! Yeni bölge açıldı (−${b.cost})`);
       updateHUD();
       return;
@@ -768,6 +777,7 @@ function buildGame() {
       const gift = weightedPick(MYSTERY_POOL);
       const granted = weaponManager.grantWeapon(gift.name);
       weaponManager.sfx.powerUp();
+      gamepad.rumble(gift.rarity === 'EFSANE' || gift.rarity === 'NADIR' ? 0.9 : 0.5, 0.8, 220);
       showToast(
         granted
           ? `🎲 ${gift.rarity}: ${weaponManager.activeDef.label}!`
@@ -989,7 +999,20 @@ window.addEventListener('resize', () => {
 
 // --- Main loop ---
 const gamepad = new GamepadInput();
+const menuNav = new GamepadMenuNav(gamepad);
 const clock = new THREE.Clock();
+
+// ── Gamepad plug/unplug notifications ──
+window.addEventListener('gamepadconnected', (e) => {
+  const name = (e.gamepad && e.gamepad.id ? e.gamepad.id : '').split('(')[0].trim() || 'Gamepad';
+  gamepad.lastPad = e.gamepad;
+  gamepad.rumble(0.3, 0.5, 150);
+  showToast(`🎮 Bağlandı: ${name}`);
+});
+window.addEventListener('gamepaddisconnected', () => {
+  const left = [...(navigator.getGamepads ? navigator.getGamepads() : [])].filter(Boolean);
+  showToast(left.length ? `🎮 Gamepad çıkarıldı — kalan: ${left.length}` : '🎮 Gamepad bağlantısı kesildi');
+});
 
 /** Two-pass render: world (layer 0), then viewmodel over a cleared depth. */
 function renderWorld() {
@@ -1011,8 +1034,12 @@ function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.05);
 
-  // Menu is up: nothing to render (the menu's CSS background shows).
-  if (!scene) return;
+  // Menu is up: nothing to render (the menu's CSS background shows) —
+  // but the menus themselves are gamepad-navigable.
+  if (!scene) {
+    menuNav.update(dt);
+    return;
+  }
 
   // Gamepad polling runs even while paused: Start toggles the pointer lock
   // (and restarts a finished run), so a controller can drive everything.
@@ -1133,6 +1160,7 @@ function animate() {
           // NOTE: uncollected power-ups must NOT gate the wave — they can
           // drop inside a building where the player can't reach them.
           showToast('Wave Cleared');
+          gamepad.rumble(0.5, 0.8, 250);
           addXp(20 * round);
           if (round > stats.bestRound) stats.bestRound = round;
           savePersisted();
@@ -1168,6 +1196,7 @@ function animate() {
         dmgEl.classList.add('show');
       }
       weaponManager.sfx.playerHurt();
+      gamepad.rumble(0.6, 1, 180);
       updateHUD();
       if (playerHealth <= 0) {
         if (weaponManager.perks.quickRevive) {
@@ -1192,6 +1221,7 @@ function animate() {
           overlay.querySelector('p').textContent = `Skor: ${score} · Tur: ${round}`;
           startBtn.textContent = '↻ Tekrar Oyna';
           pausePanel?.classList.add('hidden');
+          gamepad.rumble(1, 1, 700);
           document.exitPointerLock();
         }
       }

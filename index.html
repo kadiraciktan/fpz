@@ -207,6 +207,30 @@
       font-family: "Courier New", Courier, monospace;
     }
     #statsScreen.hidden { display: none; }
+    #statsScreen h2 { color: #ffe082; text-shadow: 0 2px 8px rgba(0,0,0,0.8); }
+    #statsBody {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 18px;
+      background: rgba(18, 22, 16, 0.92);
+      border: 1px solid rgba(180, 170, 140, 0.35);
+      border-radius: 10px;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+    }
+    #statsScreen button {
+      font-family: inherit;
+      font-size: 14px;
+      letter-spacing: 1px;
+      padding: 9px 22px;
+      border: 1px solid rgba(180, 170, 140, 0.45);
+      border-radius: 6px;
+      background: #2e7d32;
+      color: #fff;
+      cursor: pointer;
+      transition: background 0.15s, transform 0.1s;
+    }
+    #statsScreen button:hover { background: #43a047; transform: translateY(-1px); }
     .statRow {
       display: flex;
       justify-content: space-between;
@@ -214,8 +238,10 @@
       padding: 8px 14px;
       background: rgba(20, 24, 18, 0.8);
       border: 1px solid rgba(180, 170, 140, 0.35);
+      border-radius: 5px;
       letter-spacing: 1px;
     }
+    .statRow b { color: #ffd54f; }
 
     /* Toast notifications (wave cleared, pickups, ...) */
     #toasts {
@@ -460,30 +486,85 @@
       padding-bottom: 6px;
       margin-bottom: 12px;
     }
+    .menuSection > h2::before {
+      content: "";
+      display: inline-block;
+      width: 4px;
+      height: 14px;
+      background: linear-gradient(180deg, #e8b53a, #a3230f);
+      margin-right: 9px;
+      vertical-align: -2px;
+      border-radius: 2px;
+      box-shadow: 0 0 8px rgba(190, 40, 15, 0.6);
+    }
+    .btnRow {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    /* XP chip */
+    .xpChip {
+      display: inline-block;
+      padding: 7px 18px;
+      border: 1px solid rgba(255, 213, 79, 0.45);
+      border-radius: 999px;
+      background: rgba(255, 213, 79, 0.08);
+      color: #ffd54f;
+      font-size: 12px;
+      letter-spacing: 1px;
+      margin-bottom: 10px;
+      text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+    }
+    /* Gamepad focus ring (GamepadMenuNav) */
+    .gp-focus {
+      outline: 3px solid #4fc3f7 !important;
+      outline-offset: 3px;
+      box-shadow: 0 0 22px rgba(79, 195, 247, 0.65) !important;
+    }
     .mapCards {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
       gap: 12px;
     }
     .mapCard {
+      position: relative;
       border: 2px solid rgba(180, 170, 140, 0.35);
       border-radius: 8px;
       padding: 14px;
       cursor: pointer;
       background: rgba(30, 32, 28, 0.7);
-      transition: border-color 0.15s, transform 0.15s, background 0.15s;
+      transition: border-color 0.15s, transform 0.15s, background 0.15s, box-shadow 0.15s;
       text-align: center;
     }
-    .mapCard:hover { transform: translateY(-2px); background: rgba(45, 47, 40, 0.8); }
+    .mapCard:hover { transform: translateY(-3px) scale(1.015); background: rgba(45, 47, 40, 0.8); box-shadow: 0 8px 22px rgba(0,0,0,0.5); }
     .mapCard.selected {
       border-color: #7cb342;
       background: rgba(40, 55, 30, 0.6);
       box-shadow: 0 0 14px rgba(124, 179, 66, 0.35);
     }
+    .mapCard.selected::before {
+      content: "✔";
+      position: absolute;
+      top: 8px;
+      right: 12px;
+      z-index: 2;
+      color: #aef27a;
+      font-weight: bold;
+      text-shadow: 0 1px 3px #000;
+    }
     .mapCard .swatch {
+      position: relative;
       height: 64px;
       border-radius: 5px;
       margin-bottom: 10px;
+    }
+    .mapCard .swatch::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-radius: 5px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.16), transparent 45%, rgba(0,0,0,0.45));
     }
     .mapCard .mapName { font-weight: bold; font-size: 15px; letter-spacing: 1px; }
     .mapCard .mapDesc { font-size: 11px; color: #9a927c; margin-top: 4px; line-height: 1.4; }
@@ -792,8 +873,27 @@
       50%      { box-shadow: 0 0 28px rgba(124, 179, 66, 0.55); }
     }
     .menuFooter {
-      margin-top: 18px; font-size: 11px; color: #6a6552; letter-spacing: 1px;
+      margin-top: 18px;
+      font-size: 11px;
+      color: #6a6552;
+      letter-spacing: 1px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 16px;
+      justify-content: center;
+      max-width: 760px;
       animation: fadeUp 0.5s 0.34s ease-out both;
+    }
+    .menuFooter span { display: inline-flex; align-items: center; gap: 5px; }
+    .menuFooter kbd {
+      font-family: inherit;
+      font-size: 10px;
+      color: #cfd8bd;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid #55604a;
+      border-bottom-width: 3px;
+      border-radius: 4px;
+      padding: 1px 6px;
     }
 
     /* ── Deployment transition (menu → game) ───────────────────── */
@@ -893,14 +993,29 @@
     <div class="menuSection">
       <h2>Silah Özelleştirme</h2>
       <div class="attachSummary" id="attachSummary">Hiç aksesuar seçilmedi.</div>
-      <button class="gunsmithBtn" id="openGunsmithBtn">🔧 Gunsmith — Aksesuar Seç</button>
-      <button class="gunsmithBtn" id="statsBtn" style="background:#37474f;">📊 İstatistikler</button>
+      <div class="btnRow">
+        <button class="gunsmithBtn" id="openGunsmithBtn">🔧 Gunsmith — Aksesuar Seç</button>
+        <button class="gunsmithBtn" id="statsBtn" style="background:#37474f;">📊 İstatistikler</button>
+      </div>
     </div>
 
-    <div id="xpLine" style="color:#ffd54f; font-size:12px; letter-spacing:1px; margin-bottom:8px;">⭐ 0 XP — aksesuarlar XP ile açılır</div>
+    <div class="xpChip" id="xpLine">⭐ 0 XP — aksesuarlar XP ile açılır</div>
 
     <button id="startGameBtn">▶ Savaşa Başla</button>
-    <div class="menuFooter">WASD hareket · Shift koş · C kay / basılı tut çömel · Space zıpla · R şarjör · V süngü · G ses bombası · B kum torbası · Sağ tık nişan · 1-4 silah</div>
+    <div class="menuFooter">
+      <span><kbd>WASD</kbd> hareket</span>
+      <span><kbd>Shift</kbd> koş</span>
+      <span><kbd>C</kbd> kay / basılı tut çömel</span>
+      <span><kbd>Space</kbd> zıpla</span>
+      <span><kbd>R</kbd> şarjör</span>
+      <span><kbd>V</kbd> süngü</span>
+      <span><kbd>G</kbd> ses bombası</span>
+      <span><kbd>B</kbd> kum torbası</span>
+      <span><kbd>SAĞ TIK</kbd> nişan</span>
+      <span><kbd>1-4</kbd> silah</span>
+      <span><kbd>ESC</kbd> duraklat</span>
+      <span><kbd>🎮</kbd> gamepad destekli</span>
+    </div>
   </div>
 
   <div id="statsScreen" class="hidden">
@@ -908,7 +1023,7 @@
     <div id="statsBody"></div>
     <div style="display:flex; gap:12px; margin-top:8px;">
       <button id="statsCloseBtn">← Geri</button>
-      <button id="statsResetBtn" style="background:#5d4037;">Sıfırla</button>
+      <button id="statsResetBtn" style="background:#5d4037;" onmouseover="this.style.background=\"#7b5243\"" onmouseout="this.style.background=\"#5d4037\"">Sıfırla</button>
     </div>
   </div>
 
