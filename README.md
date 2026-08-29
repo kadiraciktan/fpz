@@ -11,7 +11,9 @@ npm run check:assets # validate all model/texture definitions
 npm run check:modules# verify every relative ESM import resolves
 ```
 
-To play in the browser, serve the project root with any static file server:
+Play online (GitHub Pages): https://kadiraciktan.github.io/fpz/
+
+Or serve the project root locally — no build step:
 
 ```bash
 python3 -m http.server 8080
