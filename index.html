@@ -336,6 +336,40 @@
     #overlay button:hover { background: #43a047; }
     #overlay.hidden { display: none; }
 
+    /* Pause settings panel (sensitivity / volume / FOV) */
+    #pauseOptions {
+      margin-top: 22px;
+      padding: 14px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      background: rgba(15, 18, 14, 0.75);
+      border: 1px solid rgba(180, 170, 140, 0.4);
+      border-radius: 8px;
+      font-family: "Courier New", Courier, monospace;
+      min-width: 340px;
+    }
+    #pauseOptions.hidden { display: none; }
+    .optRow {
+      display: grid;
+      grid-template-columns: 140px 1fr 48px;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+      letter-spacing: 1px;
+    }
+    .optRow .optLabel { color: #b8ae90; text-align: left; }
+    .optRow .optVal { color: #ffd54f; text-align: right; }
+    .optRow input[type="range"] { width: 100%; accent-color: #7cb342; }
+    .optHint {
+      font-family: "Courier New", Courier, monospace;
+      font-size: 10px;
+      color: #6a6552;
+      letter-spacing: 1px;
+      text-align: center;
+      margin-top: 2px;
+    }
+
     /* ── Main menu ─────────────────────────────────────────────── */
     #mainMenu {
       position: fixed;
@@ -866,7 +900,7 @@
     <div id="xpLine" style="color:#ffd54f; font-size:12px; letter-spacing:1px; margin-bottom:8px;">⭐ 0 XP — aksesuarlar XP ile açılır</div>
 
     <button id="startGameBtn">▶ Savaşa Başla</button>
-    <div class="menuFooter">WASD hareket · Shift koş · C kay · Space zıpla · R şarjör · V süngü · G ses bombası · B kum torbası · Sağ tık nişan · 1-4 silah</div>
+    <div class="menuFooter">WASD hareket · Shift koş · C kay / basılı tut çömel · Space zıpla · R şarjör · V süngü · G ses bombası · B kum torbası · Sağ tık nişan · 1-4 silah</div>
   </div>
 
   <div id="statsScreen" class="hidden">
@@ -901,6 +935,24 @@
     <p>Duraklatıldı — devam etmek için tıkla.</p>
     <button id="startBtn">▶ Devam Et</button>
     <button id="menuBtn" style="margin-top:14px; background:#546e7a;">Ana Menü</button>
+    <div id="pauseOptions">
+      <div class="optRow">
+        <span class="optLabel">Fare Hassasiyeti</span>
+        <input id="optSens" type="range" min="0.3" max="2.5" step="0.05" />
+        <span class="optVal" id="optSensVal">100%</span>
+      </div>
+      <div class="optRow">
+        <span class="optLabel">Ses Seviyesi</span>
+        <input id="optVol" type="range" min="0" max="1" step="0.05" />
+        <span class="optVal" id="optVolVal">50%</span>
+      </div>
+      <div class="optRow">
+        <span class="optLabel">Görüş Açısı (FOV)</span>
+        <input id="optFov" type="range" min="65" max="100" step="1" />
+        <span class="optVal" id="optFovVal">75°</span>
+      </div>
+      <div class="optHint">Gamepad destekli — sol stick hareket, RT ateş, Y etkileşim</div>
+    </div>
   </div>
 
   <script type="importmap">

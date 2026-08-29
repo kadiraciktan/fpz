@@ -120,6 +120,21 @@ export const WEAPON_CATEGORIES = [
 /** The 4 inventory slots keys 1-4 point at. */
 export const DEFAULT_LOADOUT = ['Pistol', 'Rifle', 'Shotgun', 'Thompson'];
 
+/**
+ * Mystery box loot table: every weapon can drop, rarity weights the roll.
+ * `label` is the rarity tag shown in the toast.
+ */
+export const MYSTERY_POOL = [
+  { name: 'Pistol', weight: 16, rarity: 'YAYGIN' },
+  { name: 'Rifle', weight: 15, rarity: 'YAYGIN' },
+  { name: 'Thompson', weight: 14, rarity: 'YAYGIN' },
+  { name: 'MP5', weight: 13, rarity: 'YAYGIN' },
+  { name: 'M4A1', weight: 12, rarity: 'IYI' },
+  { name: 'Shotgun', weight: 11, rarity: 'IYI' },
+  { name: 'LSW', weight: 8, rarity: 'NADIR' },
+  { name: 'Cal50', weight: 6, rarity: 'EFSANE' },
+];
+
 export const MODEL_BY_NAME = {
   Pistol: pistolModel,
   Rifle: rifleModel,

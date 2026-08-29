@@ -38,6 +38,10 @@ export class FPSController {
       slideSpeed: 11,
       slideDuration: 0.7,
       slideDrop: 0.45, // how far the camera crouches during the slide
+      // Full crouch (hold C): slow, low profile — no sprint while down.
+      // A short C tap while moving still triggers the slide first.
+      crouchDrop: 0.62,
+      crouchSpeedMul: 0.45,
       ...options,
     };
 
@@ -51,6 +55,13 @@ export class FPSController {
     this.mouse = { x: 0, y: 0 };
     this._yaw = 0;
     this._pitch = 0;
+
+    // Gamepad virtual inputs (Gamepad.js writes these each frame)
+    this.padMove = new THREE.Vector2(0, 0); // x=strafe, y=forward(-)
+    this.padJump = false;
+    this.padSprint = false;
+    this.padCrouch = false;
+    this.crouching = false;
 
     // Gun bobbing
     this._gunBobTime = 0;
@@ -173,6 +184,10 @@ export class FPSController {
       Rifle: { gun: 0.055, cam: 0.024, shake: 0.013 },
       Shotgun: { gun: 0.13, cam: 0.065, shake: 0.032 },
       Thompson: { gun: 0.05, cam: 0.02, shake: 0.011 },
+      M4A1: { gun: 0.052, cam: 0.023, shake: 0.012 },
+      MP5: { gun: 0.045, cam: 0.017, shake: 0.01 },
+      Cal50: { gun: 0.24, cam: 0.13, shake: 0.065 },
+      LSW: { gun: 0.075, cam: 0.036, shake: 0.021 },
     }[weaponName] || { gun: 0.07, cam: 0.032, shake: 0.018 };
     this._gunRecoil = kick.gun;
     this._cameraRecoil = kick.cam;
@@ -236,9 +251,21 @@ export class FPSController {
     if (this.keys['KeyS']) move.sub(forward);
     if (this.keys['KeyD']) move.add(right);
     if (this.keys['KeyA']) move.sub(right);
+    // Gamepad left stick (analog): x = strafe, y = forward (pushed = -1).
+    if (this.padMove.x || this.padMove.y) {
+      move.addScaledVector(right, this.padMove.x);
+      move.addScaledVector(forward, -this.padMove.y);
+    }
 
-    const sprinting = this.keys['ShiftLeft'] || this.keys['ShiftRight'];
-    const speed = sprinting ? this.params.sprintSpeed : this.params.speed;
+    // --- Crouch: hold C on the ground (a C tap while moving = slide first).
+    // Deliberately NOT Ctrl — Ctrl+W would close the tab mid-crouch. ---
+    const crouchHeld = this.keys['KeyC'] || this.padCrouch;
+    this.crouching = !!crouchHeld && this.onGround && this._slideTime <= 0;
+
+    const sprinting =
+      !this.crouching && (this.keys['ShiftLeft'] || this.keys['ShiftRight'] || this.padSprint);
+    let speed = sprinting ? this.params.sprintSpeed : this.params.speed;
+    if (this.crouching) speed *= this.params.crouchSpeedMul;
 
     // --- Slide: press C on the ground while moving to kick into a slide ---
     const horizSpeed = Math.hypot(this.velocity.x, this.velocity.z);
@@ -282,7 +309,7 @@ export class FPSController {
     this.velocity.y -= this.params.gravity * dt;
 
     // --- Jump ---
-    if (this.keys['Space'] && this.onGround && !sliding) {
+    if ((this.keys['Space'] || this.padJump) && this.onGround && !sliding) {
       this.velocity.y = this.params.jumpForce;
       this.onGround = false;
     }
@@ -306,9 +333,10 @@ export class FPSController {
     // --- Apply to camera ---
     this.camera.position.copy(this.position);
 
-    // --- Slide crouch: dip the camera toward the ground, then stand back up ---
-    const dropTarget = sliding ? this.params.slideDrop : 0;
-    this._slideDrop = THREE.MathUtils.lerp(this._slideDrop, dropTarget, Math.min(1, dt * (sliding ? 14 : 8)));
+    // --- Slide / crouch dip: lower the camera, then stand back up ---
+    const dropped = sliding || this.crouching;
+    const dropTarget = sliding ? this.params.slideDrop : this.crouching ? this.params.crouchDrop : 0;
+    this._slideDrop = THREE.MathUtils.lerp(this._slideDrop, dropTarget, Math.min(1, dt * (sliding ? 14 : 9)));
     this.camera.position.y -= this._slideDrop;
 
     // --- Legs follow the body in world space (yaw-aligned, feet on ground) ---

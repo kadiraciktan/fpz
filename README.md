@@ -22,18 +22,24 @@ python3 -m http.server 8080
 ```
 ├── index.html              # Game entry point (importmap → three@0.160.0)
 ├── src/
-│   ├── main.js             # Game loop, rounds, scoring, HUD
+│   ├── main.js             # Game loop, rounds, scoring, HUD, pause settings
 │   ├── Scene.js            # Environment: ground, walls, streetlamps, sky
-│   ├── FPSController.js    # Pointer-lock FPS camera, WASD + jump
+│   ├── FPSController.js    # Pointer-lock FPS camera, WASD + jump + crouch
+│   ├── Gamepad.js          # Gamepad API bridge (sticks, triggers, buttons)
 │   ├── Weapons.js          # WeaponManager facade (ammo, tracers, reload)
 │   ├── weapons/
-│   │   ├── defs.js         #   Weapon stats, attachment/skin metadata
+│   │   ├── defs.js         #   Weapon stats, attachment/skin metadata, box pool
+│   │   ├── ammo.js         #   Pure ammo-economy math (reserve, weighted picks)
 │   │   ├── attachments.js  #   Optic/suppressor/grip/mag/stock builders
 │   │   └── viewmodels.js   #   Gun, hands and first-person legs meshes
+│   ├── game/
+│   │   └── waves.js        #   Pure wave scaling + special round formulas
+│   ├── ui/
+│   │   └── gunsmith.js     #   Gunsmith screen (preview renderer, cards)
 │   ├── Enemy.js            # Zombie AI: walk/attack/death + Animator
 │   ├── ModelLoader.js      # buildModel() + buildTexture() pipeline
 │   ├── Animation.js        # Keyframe Animator (pos/rot/scale, lerp, onEnd)
-│   ├── Sound.js            # Web Audio procedural SFX (shots, reload, ambience)
+│   ├── Sound.js            # Web Audio procedural SFX + tension music
 │   └── Prefabs.js          # Reusable scene objects (lamps, crates, barriers)
 ├── models/
 │   ├── pistol.js           # M1911 — 11 parts, fire + reload anims
@@ -143,15 +149,32 @@ Features: turntable rotation, part picking, wireframe toggle, texture preview.
 | WASD | Move |
 | Space | Jump |
 | Shift | Sprint |
+| C | Tap = slide · hold = crouch (slow, low profile) |
 | Mouse | Look / Aim |
 | LMB | Shoot |
 | RMB | Aim (ADS) |
-| R | Reload |
+| R | Reload (uses finite reserve ammo) |
 | 1-4 | Switch weapon |
 | E | Interact (pickup / open box / buy perk) |
 | V | Melee (bayonet) |
 | G | Noisemaker (lures zombies) |
 | B | Build sandbag (prep phase) |
+| Esc | Pause menu (sensitivity / volume / FOV sliders) |
+
+## Gamepad (Xbox layout)
+
+Auto-detected every frame — no setup needed:
+
+| Input | Action |
+|-------|--------|
+| Left stick | Move |
+| Right stick | Look |
+| LT / RT | Aim / Shoot |
+| A / B | Jump / Crouch (hold) |
+| X / Y | Reload / Interact |
+| LB / RB | Previous / next weapon |
+| L3 | Sprint (hold) |
+| Start | Pause toggle |
 
 ## Perk Machines (CoD Zombies style)
 
@@ -201,6 +224,35 @@ becomes a valid zombie spawn area:
 
 Attachments unlock with lifetime XP (kills/headshots/waves); optics share one
 mount slot; the .50 CAL and M4A1 take the sniper tube scope.
+
+## Ammo Economy
+
+Every gun starts with 4 full magazines of **reserve ammo** (HUD: `mag ▸ reserve`).
+Reloading draws from the reserve — when it runs dry the gun clicks and you must
+wait for a drop:
+
+- **CEP crate** (30% of drops): tops up every gun's reserve by 1.5 magazines
+- **MAX pickup**: fills every gun completely (magazine + reserve)
+- Boss kills always drop a MAX
+
+## Special Rounds
+
+- **Boss round** — every 5th round from round 5 (two from round 15): huge red
+  elites (x10 HP, x2 damage, 500 pts, MAX drop)
+- **Sprint round** — every 7th round: the horde is 100% sprinters
+- Wave formulas live in `src/game/waves.js` (unit-tested)
+
+## Mystery Box (CoD-style loot table)
+
+950 pts — all 8 guns roll, weighted by rarity (YAYGIN → IYI → NADIR → EFSANE).
+The gun replaces your active slot; a duplicate instead refills your ammo.
+Pay again on the same box to reroll.
+
+## Audio
+
+All procedural Web Audio — no files. 8 per-weapon gunshot profiles, filtered
+street echo, zombie growls, and a tension music layer (A-minor drone + bass
+sequence) whose tempo and lead register rise with the wave count.
 
 ## Notes
 

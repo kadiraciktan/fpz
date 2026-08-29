@@ -21,6 +21,7 @@ export const ENEMY_TYPES = {
   sprinter: { speedMul: 2.1, healthMul: 0.6, scale: 0.85, texture: zombieSprinterTexture, score: 70 },
   brute: { speedMul: 0.55, healthMul: 3.2, damageMul: 2, scale: 1.45, texture: zombieBruteTexture, score: 130 },
   bomber: { speedMul: 1.15, healthMul: 1, scale: 1.1, texture: zombieBomberTexture, explosive: true, detonateRange: 2.3, score: 90 },
+  boss: { speedMul: 0.8, healthMul: 10, damageMul: 2, scale: 2.1, texture: zombieBruteTexture, tint: 0xff7050, score: 500 },
 };
 
 // Recycled viewmodel groups, shared across all Enemy instances. Kept per

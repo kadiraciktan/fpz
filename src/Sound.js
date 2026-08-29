@@ -15,7 +15,9 @@ export class Sfx {
   constructor() {
     this.ctx = null;
     this.master = null;
+    this._volume = 0.5;
     this._ambienceNodes = [];
+    this._music = null;
   }
 
   /** Create the AudioContext lazily (must happen after a user gesture). */
@@ -28,12 +30,133 @@ export class Sfx {
     if (!AC) return;
     this.ctx = new AC();
     this.master = this.ctx.createGain();
-    this.master.gain.value = 0.5;
+    this.master.gain.value = this._volume ?? 0.5;
     this.master.connect(this.ctx.destination);
   }
 
   _now() {
     return this.ctx ? this.ctx.currentTime : 0;
+  }
+
+  /** Master volume 0..1 (settings menu). */
+  setVolume(v) {
+    this._volume = Math.max(0, Math.min(1, v));
+    if (this.master) this.master.gain.value = this._volume;
+  }
+
+  /** Tear down the audio graph when the run ends (a fresh Sfx is built per run). */
+  dispose() {
+    this.stopMusic();
+    for (const n of this._ambienceNodes) {
+      try { if (n.stop) n.stop(); } catch { /* already stopped */ }
+    }
+    this._ambienceNodes.length = 0;
+    if (this.ctx) {
+      try { this.ctx.close(); } catch { /* ignore */ }
+      this.ctx = null;
+      this.master = null;
+    }
+  }
+
+  // ── Procedural tension music ──────────────────────────────────────────
+  // A low drone + an eighth-note minor bass sequence whose tempo and
+  // register rise with the wave count. Scheduled from a setInterval
+  // look-ahead loop so it never glitches on frame hitches.
+
+  /** @param {number} [intensity] 0..1 (round / 12) */
+  startMusic(intensity = 0.2) {
+    if (!this.ctx || this._music) return;
+    const t = this._now();
+    const out = this.ctx.createGain();
+    out.gain.setValueAtTime(0.0001, t);
+    out.gain.linearRampToValueAtTime(0.14, t + 4);
+    out.connect(this.master);
+
+    // Continuous minor drone (A1 + E2, detuned saws through a lowpass)
+    const droneFilter = this.ctx.createBiquadFilter();
+    droneFilter.type = 'lowpass';
+    droneFilter.frequency.value = 220;
+    droneFilter.connect(out);
+    const oscs = [];
+    for (const [freq, detune, vol] of [[55, -6, 0.5], [55, 7, 0.4], [82.4, 0, 0.25]]) {
+      const osc = this.ctx.createOscillator();
+      osc.type = 'sawtooth';
+      osc.frequency.value = freq;
+      osc.detune.value = detune;
+      const g = this.ctx.createGain();
+      g.gain.value = vol;
+      osc.connect(g).connect(droneFilter);
+      osc.start(t);
+      oscs.push(osc, g);
+    }
+
+    this._music = {
+      out, droneFilter, oscs,
+      intensity,
+      step: 0,
+      nextTime: t + 0.12,
+      timer: setInterval(() => this._musicTick(), 90),
+    };
+  }
+
+  /** Tempo/register follow the wave intensity (0..1). */
+  setMusicIntensity(x) {
+    if (this._music) this._music.intensity = Math.max(0, Math.min(1, x));
+  }
+
+  stopMusic() {
+    const m = this._music;
+    if (!m) return;
+    this._music = null;
+    clearInterval(m.timer);
+    if (!this.ctx) return;
+    const t = this._now();
+    m.out.gain.cancelScheduledValues(t);
+    m.out.gain.setValueAtTime(m.out.gain.value, t);
+    m.out.gain.linearRampToValueAtTime(0.0001, t + 0.8);
+    for (const n of m.oscs) if (n.stop) n.stop(t + 1);
+  }
+
+  _musicTick() {
+    const m = this._music;
+    if (!m || !this.ctx) return;
+    // A-minor bass sequence, one pitch per beat (every 2 eighth steps).
+    const BASS = [55, 55, 65.41, 55, 73.42, 65.41, 55, 49];
+    const LEAD = [220, 261.63, 293.66, 329.63];
+    const stepDur = 60 / (72 + 52 * m.intensity) / 2;
+    while (m.nextTime < this.ctx.currentTime + 0.3) {
+      const t = m.nextTime;
+      const beat = Math.floor(m.step / 2) % BASS.length;
+      this._musicNote(t, BASS[beat], stepDur * 1.8, 300, 0.16);
+      // Tension lead: only at higher intensity, on off-steps.
+      if (m.intensity > 0.35 && m.step % 4 === 2) {
+        this._musicNote(
+          t,
+          LEAD[Math.floor(m.step / 4) % LEAD.length],
+          stepDur,
+          1800,
+          0.045 + 0.05 * m.intensity
+        );
+      }
+      m.step++;
+      m.nextTime += stepDur;
+    }
+  }
+
+  _musicNote(t, freq, dur, cutoff, vol) {
+    const osc = this.ctx.createOscillator();
+    osc.type = 'triangle';
+    osc.frequency.value = freq;
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = cutoff;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + 0.03);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    osc.connect(lp).connect(g).connect(this._music.out);
+    osc.start(t);
+    osc.stop(t + dur + 0.05);
   }
 
   /**
@@ -49,6 +172,10 @@ export class Sfx {
       Rifle: { noise: 0.14, bp: 1200, thump: 90, crack: 0.55, tail: 0.14 },
       Shotgun: { noise: 0.2, bp: 800, thump: 62, crack: 0.75, tail: 0.22 },
       Thompson: { noise: 0.07, bp: 2200, thump: 140, crack: 0.45, tail: 0.08 },
+      M4A1: { noise: 0.1, bp: 1600, thump: 108, crack: 0.52, tail: 0.11 },
+      MP5: { noise: 0.06, bp: 2500, thump: 150, crack: 0.42, tail: 0.07 },
+      Cal50: { noise: 0.3, bp: 520, thump: 48, crack: 0.9, tail: 0.34 },
+      LSW: { noise: 0.12, bp: 1050, thump: 82, crack: 0.6, tail: 0.16 },
     };
     const p = profiles[weaponName] || profiles.Pistol;
 

@@ -1,9 +1,13 @@
 import * as THREE from 'three';
 import { createScene, flickerLights, MAPS } from './Scene.js';
 import { FPSController } from './FPSController.js';
-import { WeaponManager, createLegsMesh, ATTACHMENTS, WEAPON_DEFS, WEAPON_LABELS, WEAPON_CATEGORIES, DEFAULT_LOADOUT, SKINS, OPTICS, createGunsmithPreview, attachmentAvailable } from './Weapons.js';
+import { WeaponManager, createLegsMesh, ATTACHMENTS, WEAPON_DEFS, DEFAULT_LOADOUT, MYSTERY_POOL } from './Weapons.js';
+import { createGunsmithScreen } from './ui/gunsmith.js';
 import { Enemy } from './Enemy.js';
 import { createSandbag, createPerkMachine, markMachineSold } from './Prefabs.js';
+import { GamepadInput } from './Gamepad.js';
+import { waveCount, waveParams, pickEnemyType, isBossRound, bossCount, isSprintRound, waveIntensity } from './game/waves.js';
+import { weightedPick } from './weapons/ammo.js';
 
 /**
  * main.js
@@ -80,285 +84,8 @@ for (const d of WEAPON_DEFS) {
 }
 setup.loadout = [...DEFAULT_LOADOUT];
 
-// ── Gunsmith screen (MW2-style: gun in the middle, cards around it) ──
-const gunsmithEl = document.getElementById('gunsmithScreen');
-const gsCanvas = document.getElementById('gunsmithCanvas');
-const gsLinesEl = document.getElementById('gsLines');
-const gsNameEl = document.getElementById('gsWeaponName');
-const gsCardsEl = document.getElementById('gsCards');
-const gsSkinsEl = document.getElementById('gsSkins');
-const gsTabsEl = document.getElementById('gsWeaponTabs');
-const gsPickerEl = document.getElementById('gsPicker');
-const attachSummaryEl = document.getElementById('attachSummary');
-
-// Card slot layout — MW2-style ring around the gun: 3 top, 2 sides, 2 bottom.
-// The four optics share one mount slot; only one can be equipped at a time.
-const GS_SLOTS = [
-  { key: 'suppressor', pos: 'pos-tl' },
-  { key: 'reflex', pos: 'pos-tc' },
-  { key: 'holo', pos: 'pos-tr' },
-  { key: 'acog', pos: 'pos-ml' },
-  { key: 'scope', pos: 'pos-mr' },
-  { key: 'foregrip', pos: 'pos-bc' },
-  { key: 'extendedMag', pos: 'pos-bl' },
-  { key: 'lightStock', pos: 'pos-br' },
-];
-
-// Tiny inline silhouettes for each attachment card (fill = currentColor).
-const GS_ICONS = {
-  suppressor: '<svg viewBox="0 0 120 26"><rect x="8" y="9" width="70" height="8" rx="3"/><rect x="76" y="6" width="36" height="14" rx="4"/><rect x="14" y="11" width="4" height="4"/><rect x="24" y="11" width="4" height="4"/><rect x="34" y="11" width="4" height="4"/></svg>',
-  scope: '<svg viewBox="0 0 120 26"><rect x="18" y="10" width="84" height="7" rx="3"/><rect x="10" y="6" width="12" height="15" rx="2"/><rect x="100" y="7" width="10" height="13" rx="2"/><rect x="44" y="2" width="14" height="6" rx="2"/><rect x="66" y="2" width="14" height="6" rx="2"/></svg>',
-  reflex: '<svg viewBox="0 0 120 26"><rect x="40" y="20" width="40" height="4" rx="2"/><rect x="44" y="9" width="4" height="11"/><rect x="72" y="9" width="4" height="11"/><rect x="42" y="5" width="36" height="4" rx="2"/><circle cx="60" cy="14" r="3"/></svg>',
-  holo: '<svg viewBox="0 0 120 26"><rect x="42" y="20" width="36" height="4" rx="2"/><rect x="40" y="4" width="40" height="4" rx="2"/><rect x="40" y="4" width="4" height="18"/><rect x="76" y="4" width="4" height="18"/><circle cx="60" cy="13" r="5" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="60" cy="13" r="1.5"/></svg>',
-  acog: '<svg viewBox="0 0 120 26"><rect x="28" y="8" width="64" height="10" rx="4"/><rect x="20" y="6" width="12" height="14" rx="3"/><rect x="90" y="7" width="10" height="12" rx="3"/><rect x="42" y="5" width="6" height="16"/><rect x="72" y="5" width="6" height="16"/><rect x="52" y="18" width="16" height="5"/></svg>',
-  foregrip: '<svg viewBox="0 0 120 26"><rect x="52" y="2" width="16" height="6" rx="2"/><path d="M54 8 h12 l-2 16 h-8 z"/><rect x="30" y="3" width="60" height="4" rx="2"/></svg>',
-  extendedMag: '<svg viewBox="0 0 120 26"><rect x="46" y="2" width="28" height="6" rx="2"/><path d="M50 8 h20 v14 q0 3 -3 3 h-14 q-3 0 -3 -3 z"/><rect x="53" y="10" width="14" height="2"/><rect x="53" y="14" width="14" height="2"/></svg>',
-  lightStock: '<svg viewBox="0 0 120 26"><rect x="20" y="10" width="46" height="5" rx="2"/><rect x="14" y="4" width="6" height="18" rx="2"/><rect x="60" y="6" width="5" height="14" rx="2"/><rect x="66" y="10" width="34" height="5" rx="2"/></svg>',
-};
-
-// ── Preview renderer (own context; runs only while the screen is open) ──
-const gsRenderer = new THREE.WebGLRenderer({ canvas: gsCanvas, antialias: true, alpha: true });
-gsRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-gsRenderer.shadowMap.enabled = false;
-const gsScene = new THREE.Scene();
-const gsCamera = new THREE.PerspectiveCamera(40, 1, 0.01, 50);
-gsCamera.position.set(0.75, 0.45, 1.25);
-gsCamera.lookAt(0, 0.02, 0);
-gsScene.add(new THREE.AmbientLight(0xbfd4ff, 1.4));
-const gsKey = new THREE.DirectionalLight(0xfff2dd, 3.2);
-gsKey.position.set(2, 3, 2);
-gsScene.add(gsKey);
-const gsRim = new THREE.DirectionalLight(0x4fc3f7, 1.6);
-gsRim.position.set(-3, 1, -2);
-gsScene.add(gsRim);
-
-let gsSlot = 0; // which loadout slot (0-3) is being edited
-let gsWeapon = DEFAULT_LOADOUT[0];
-let gsGunGroup = null;
-let gsRafId = 0;
-let gsLastT = 0;
-
-function gsRebuildGun() {
-  if (gsGunGroup) {
-    gsScene.remove(gsGunGroup);
-    gsGunGroup.traverse((o) => {
-      if (o.isMesh) {
-        o.geometry.dispose();
-        // Skin materials are cloned per preview; free them on rebuild.
-        if (o.material && o.material.map) o.material.dispose();
-      }
-    });
-  }
-  const def = WEAPON_DEFS.find((d) => d.name === gsWeapon);
-  gsGunGroup = createGunsmithPreview(def, setup.attachments[gsWeapon], setup.skins[gsWeapon]);
-  const scale = {
-    Pistol: 1.15, Rifle: 0.78, Shotgun: 0.85, Thompson: 0.9,
-    M4A1: 0.8, MP5: 1.0, Cal50: 0.55, LSW: 0.72,
-  }[gsWeapon] || 1;
-  gsGunGroup.scale.setScalar(scale);
-  gsGunGroup.rotation.y = -0.6;
-  gsScene.add(gsGunGroup);
-}
-
-function gsUpdateLines() {
-  const w = gsRenderer.domElement.clientWidth;
-  const h = gsRenderer.domElement.clientHeight;
-  const cx = w / 2;
-  const cy = h * 0.52; // gun centre on screen
-  let svg = '';
-  for (const card of gsCardsEl.children) {
-    const r = card.getBoundingClientRect();
-    // Anchor the line at the card edge closest to the gun centre.
-    const px = Math.min(Math.max(cx, r.left), r.right);
-    const py = Math.min(Math.max(cy, r.top), r.bottom);
-    svg += `<line x1="${px}" y1="${py}" x2="${cx}" y2="${cy}" stroke="rgba(79,195,247,0.55)" stroke-width="1.5"/>`;
-    svg += `<circle cx="${px}" cy="${py}" r="2.5" fill="#4fc3f7"/>`;
-  }
-  gsLinesEl.setAttribute('viewBox', `0 0 ${w} ${h}`);
-  gsLinesEl.innerHTML = svg;
-}
-
-function gsRenderLoop(t) {
-  gsRafId = requestAnimationFrame(gsRenderLoop);
-  const dt = Math.min(0.05, (t - gsLastT) / 1000 || 0);
-  gsLastT = t;
-  if (gsGunGroup) gsGunGroup.rotation.y += dt * 0.55;
-  gsRenderer.render(gsScene, gsCamera);
-}
-
-function gsSizeCanvas() {
-  const w = gunsmithEl.clientWidth || window.innerWidth;
-  const h = gunsmithEl.clientHeight || window.innerHeight;
-  gsRenderer.setSize(w, h, false);
-  gsCamera.aspect = w / h;
-  gsCamera.updateProjectionMatrix();
-  gsUpdateLines();
-}
-
-function gsRefreshCards() {
-  for (const card of gsCardsEl.children) {
-    const key = card.dataset.key;
-    if (!key || card.classList.contains('disabled')) continue;
-    const meta = ATTACHMENTS[key];
-    const on = !!setup.attachments[gsWeapon][key];
-    card.classList.toggle('equipped', on);
-    card.querySelector('.gsStatus').textContent =
-      on ? `TAKILI: ${meta.hint}` : `BOŞ — tıkla: ${meta.hint}`;
-  }
-}
-
-function gsBuildCards() {
-  gsCardsEl.innerHTML = '';
-  for (const slot of GS_SLOTS) {
-    const meta = ATTACHMENTS[slot.key];
-    const xpReq = meta.xp || 0;
-    const xpLocked = totalXp < xpReq;
-    const locked = !attachmentAvailable(gsWeapon, slot.key) || xpLocked;
-    const card = document.createElement('div');
-    card.className = `gsCard ${slot.pos}`;
-    card.dataset.key = slot.key;
-    if (locked) card.classList.add('disabled');
-    else if (setup.attachments[gsWeapon][slot.key]) card.classList.add('equipped');
-    card.innerHTML = `
-      <div class="gsTitle">${meta.label}${xpReq > 0 ? ` <span class="gsXp">${xpReq} XP</span>` : ''}</div>
-      <div class="gsBox">
-        <div class="gsWName">${WEAPON_LABELS[gsWeapon]}</div>
-        <div class="gsMini">${GS_ICONS[slot.key]}<div class="gsA">A</div></div>
-        <div class="gsStatus">${
-          xpLocked
-            ? `🔒 ${xpReq} XP gerekir (sende ${totalXp})`
-            : locked
-              ? 'Bu silahta yok'
-              : (card.classList.contains('equipped') ? 'TAKILI' : 'BOŞ — tıkla')
-        }: ${meta.hint}</div>
-      </div>`;
-    if (!locked) {
-      card.addEventListener('click', () => {
-        const wasOn = setup.attachments[gsWeapon][slot.key];
-        if (OPTICS.includes(slot.key)) {
-          // Optics share a single mount — equipping one drops the others.
-          for (const o of OPTICS) setup.attachments[gsWeapon][o] = false;
-        }
-        setup.attachments[gsWeapon][slot.key] = !wasOn;
-        gsRefreshCards();
-        gsRebuildGun();
-        gsUpdateSummary();
-      });
-    }
-    gsCardsEl.appendChild(card);
-  }
-  gsUpdateLines();
-}
-
-function gsBuildTabs() {
-  gsTabsEl.innerHTML = '';
-  for (let i = 0; i < setup.loadout.length; i++) {
-    const tab = document.createElement('button');
-    tab.className = 'gsTab' + (i === gsSlot ? ' active' : '');
-    tab.textContent = `${i + 1}. ${WEAPON_LABELS[setup.loadout[i]] || '?'}`;
-    tab.addEventListener('click', () => {
-      gsSlot = i;
-      gsWeapon = setup.loadout[i];
-      gsNameEl.textContent = WEAPON_LABELS[gsWeapon] || gsWeapon;
-      gsBuildTabs();
-      gsBuildCards();
-      gsBuildSkins();
-      gsBuildPicker();
-      gsRebuildGun();
-    });
-    gsTabsEl.appendChild(tab);
-  }
-}
-
-/** Category-grouped weapon list (CoD gunsmith-style loadout picker). */
-function gsBuildPicker() {
-  if (!gsPickerEl) return;
-  gsPickerEl.innerHTML = '';
-  for (const cat of WEAPON_CATEGORIES) {
-    const defs = WEAPON_DEFS.filter((d) => d.category === cat);
-    if (!defs.length) continue;
-    const head = document.createElement('div');
-    head.className = 'gsCat';
-    head.textContent = cat;
-    gsPickerEl.appendChild(head);
-    for (const d of defs) {
-      const btn = document.createElement('button');
-      btn.className = 'gsPick' + (setup.loadout[gsSlot] === d.name ? ' active' : '');
-      const slotIdx = setup.loadout.indexOf(d.name);
-      btn.innerHTML = `<b>${d.label}</b><span class="gsPickStats">${d.magazineSize} mermi · ${d.damage}x dmg · ${d.range} m</span>`
-        + (slotIdx >= 0 ? `<i class="gsPickSlot">${slotIdx + 1}</i>` : '');
-      btn.addEventListener('click', () => {
-        const other = setup.loadout.indexOf(d.name);
-        if (other === gsSlot) return;
-        // CoD rule: an owned weapon swaps slots instead of being equipped twice.
-        if (other >= 0) setup.loadout[other] = setup.loadout[gsSlot];
-        setup.loadout[gsSlot] = d.name;
-        gsWeapon = d.name;
-        gsNameEl.textContent = WEAPON_LABELS[gsWeapon] || gsWeapon;
-        gsBuildTabs();
-        gsBuildCards();
-        gsBuildSkins();
-        gsBuildPicker();
-        gsRebuildGun();
-        gsUpdateSummary();
-      });
-      gsPickerEl.appendChild(btn);
-    }
-  }
-}
-
-function gsBuildSkins() {
-  gsSkinsEl.innerHTML = '<span class="gsSkinsLabel">SKIN</span>';
-  for (const [id, skin] of Object.entries(SKINS)) {
-    const el = document.createElement('div');
-    el.className = 'gsSkin' + (setup.skins[gsWeapon] === id ? ' active' : '');
-    el.title = skin.hint;
-    el.innerHTML = `<div class="gsSwatch" style="background:${skin.swatch}"></div><div class="gsSkinName">${skin.label}</div>`;
-    el.addEventListener('click', () => {
-      setup.skins[gsWeapon] = id;
-      gsSkinsEl.querySelectorAll('.gsSkin').forEach((s) => s.classList.toggle('active', s === el));
-      gsRebuildGun();
-      gsUpdateSummary();
-    });
-    gsSkinsEl.appendChild(el);
-  }
-}
-
-function gsUpdateSummary() {
-  const parts = [];
-  for (const [w, atts] of Object.entries(setup.attachments)) {
-    const names = Object.keys(ATTACHMENTS).filter((k) => atts[k]).map((k) => ATTACHMENTS[k].label);
-    if (setup.skins[w] !== 'default') names.push(SKINS[setup.skins[w]].label + ' skin');
-    if (names.length) parts.push(`${WEAPON_LABELS[w]}: ${names.join(', ')}`);
-  }
-  const loadoutLine = setup.loadout.map((n, i) => `${i + 1}.${WEAPON_LABELS[n] || n}`).join(' · ');
-  attachSummaryEl.textContent = `Loadout: ${loadoutLine}${parts.length ? ' — ' + parts.join(' · ') : ''}`;
-}
-
-function openGunsmith() {
-  gunsmithEl.classList.remove('hidden');
-  gsSlot = 0;
-  gsWeapon = setup.loadout[0];
-  gsBuildTabs();
-  gsBuildCards();
-  gsBuildSkins();
-  gsBuildPicker();
-  gsNameEl.textContent = WEAPON_LABELS[gsWeapon] || gsWeapon;
-  gsRebuildGun();
-  gsSizeCanvas();
-  gsLastT = performance.now();
-  gsRafId = requestAnimationFrame(gsRenderLoop);
-}
-
-function closeGunsmith() {
-  cancelAnimationFrame(gsRafId);
-  gsRafId = 0;
-  gunsmithEl.classList.add('hidden');
-}
-
-document.getElementById('openGunsmithBtn').addEventListener('click', openGunsmith);
-document.getElementById('gsBackBtn').addEventListener('click', closeGunsmith);
-window.addEventListener('resize', () => { if (gsRafId) gsSizeCanvas(); });
+// ── Gunsmith screen (extracted to src/ui/gunsmith.js; wires its own buttons) ──
+createGunsmithScreen(setup, () => totalXp);
 
 // ── Deployment transition: menu → game cinematic handoff ──
 const transitionEl = document.getElementById('transition');
@@ -436,6 +163,8 @@ let thompsonMesh = null;
 let mysteryBox = null;
 let mysteryLabel = null;
 let onInteractKey = null;
+// Gamepad "Y" routes here while a run is live (set by buildGame).
+let interactFn = null;
 // Half-extent of the playable area (from the scene) — keeps enemy spawns
 // inside the perimeter walls on enclosed maps.
 let arenaHalf = 45;
@@ -510,6 +239,36 @@ function addXp(n) {
 
 loadPersisted();
 
+// ── Player settings (pause menu): sensitivity / volume / FOV, persisted ──
+const OPTS_KEY = 'zombieFront.opts';
+const opts = { sens: 1, volume: 0.5, fov: 75 };
+
+function loadOpts() {
+  try {
+    Object.assign(opts, JSON.parse(localStorage.getItem(OPTS_KEY) || '{}'));
+  } catch { /* corrupt data: defaults */ }
+}
+
+function saveOpts() {
+  try { localStorage.setItem(OPTS_KEY, JSON.stringify(opts)); } catch { /* ignore */ }
+}
+
+/** Push the settings into controller / audio / camera. Safe any time. */
+function applyOpts() {
+  if (controller) controller.params.mouseSensitivity = 0.002 * opts.sens;
+  if (weaponManager) {
+    weaponManager.hipFov = opts.fov;
+    weaponManager.sfx.setVolume(opts.volume);
+  }
+  if (Math.abs(camera.fov - opts.fov) > 0.01 && !document.pointerLockElement) {
+    camera.fov = opts.fov;
+    // Safe while the pause overlay is up; in-game the ADS lerp eases to it.
+    camera.updateProjectionMatrix();
+  }
+}
+
+loadOpts();
+
 /** True if a ground position is inside any static obstacle (buildings, rubble...). */
 function isBlocked(x, z) {
   for (const obs of controller.obstacles) {
@@ -527,45 +286,44 @@ function isBlocked(x, z) {
   return false;
 }
 
+/** Find a spawn point: inside an UNLOCKED zone (never through a barrier),
+ *  outside buildings/rubble, and at least 8 m from the player. */
+function findSpawnPos() {
+  const pos = new THREE.Vector3();
+  const openZones = zones.filter((z) => z.unlocked);
+  for (let tries = 0; tries < 30; tries++) {
+    const zone = openZones[Math.floor(Math.random() * openZones.length)] || zones[0];
+    const [minX, minZ, maxX, maxZ] = zone.rect;
+    const x = minX + Math.random() * (maxX - minX);
+    const z = minZ + Math.random() * (maxZ - minZ);
+    const dx = x - controller.position.x;
+    const dz = z - controller.position.z;
+    if (dx * dx + dz * dz < 64) continue;
+    if (!isBlocked(x, z)) return pos.set(x, 0, z);
+  }
+  // Last resort: a ring around the map center — the main zone always
+  // keeps that area free of obstacles, so the zombie always spawns
+  // somewhere the player can reach.
+  const a = Math.random() * Math.PI * 2;
+  return pos.set(Math.cos(a) * 12, 0, Math.sin(a) * 12);
+}
+
 function spawnWave() {
   waveState = 'active';
-  showToast(`Wave ${round}`);
-  const count = 3 + round * 2;
-  const openZones = zones.filter((z) => z.unlocked);
+  weaponManager.sfx.setMusicIntensity(waveIntensity(round));
+  const boss = isBossRound(round);
+  const sprint = isSprintRound(round);
+  showToast(
+    boss ? `WAVE ${round} - PATRON!`
+      : sprint ? `WAVE ${round} - SPRINT DALGASI!`
+        : `Wave ${round}`
+  );
+  const count = waveCount(round);
+  const { hp, spd, dmg } = waveParams(round);
   for (let i = 0; i < count; i++) {
-    // Find a spawn point: inside an UNLOCKED zone (never through a barrier),
-    // outside buildings/rubble, and at least 8m from the player.
-    const pos = new THREE.Vector3();
-    let placed = false;
-    for (let tries = 0; tries < 30 && !placed; tries++) {
-      const zone = openZones[Math.floor(Math.random() * openZones.length)] || zones[0];
-      const [minX, minZ, maxX, maxZ] = zone.rect;
-      const x = minX + Math.random() * (maxX - minX);
-      const z = minZ + Math.random() * (maxZ - minZ);
-      const dx = x - controller.position.x;
-      const dz = z - controller.position.z;
-      if (dx * dx + dz * dz < 64) continue;
-      if (!isBlocked(x, z)) {
-        pos.set(x, 0, z);
-        placed = true;
-      }
-    }
-    if (!placed) {
-      // Last resort: a ring around the map center — the main zone always
-      // keeps that area free of obstacles, so the zombie always spawns
-      // somewhere the player can reach.
-      const a = Math.random() * Math.PI * 2;
-      pos.set(Math.cos(a) * 12, 0, Math.sin(a) * 12);
-    }
-    const hp = 2 + Math.floor(round / 2);
-    const spd = 1.5 + Math.min(round * 0.2, 3);
-    const dmg = 5 + round;
-    // Type mix gets nastier with the round: sprinters r3+, brutes r4+, bombers r5+.
-    let type = 'normal';
-    const roll = Math.random();
-    if (round >= 5 && roll < 0.15) type = 'bomber';
-    else if (round >= 4 && roll < 0.35) type = 'brute';
-    else if (round >= 3 && roll < 0.6) type = 'sprinter';
+    const pos = findSpawnPos();
+    // Type mix gets nastier with the round (pure sprinters on sprint rounds).
+    const type = sprint ? 'sprinter' : pickEnemyType(round, Math.random());
     const enemy = new Enemy(scene, pos, {
       type,
       speed: spd,
@@ -576,6 +334,22 @@ function spawnWave() {
       getPeers: () => enemies,
     });
     enemies.push(enemy);
+  }
+  // Boss round: heavy red elites walk in — big HP pool, big payout.
+  if (boss) {
+    for (let b = 0; b < bossCount(round); b++) {
+      const enemy = new Enemy(scene, findSpawnPos(), {
+        type: 'boss',
+        speed: spd,
+        health: hp,
+        damage: dmg,
+        obstacles: controller.obstacles,
+        sandbags,
+        getPeers: () => enemies,
+      });
+      enemies.push(enemy);
+    }
+    weaponManager.sfx.zombieScream();
   }
   weaponManager.setTargets(enemies.map(e => e.group));
 }
@@ -666,11 +440,12 @@ function placeSandbag() {
 
 // --- Power-ups (drop on kill ~25%, pick up by proximity) ---
 const POWERUP_TYPES = [
-  { key: 'MaxAmmo', color: 0x00ff88, label: 'MAX' },
-  { key: 'InstaKill', color: 0xffff00, label: 'IK' },
-  { key: 'Nuke', color: 0xffaa00, label: 'NUK' },
-  { key: 'DoublePoints', color: 0x00ff00, label: 'x2' },
-  { key: 'MedKit', color: 0xff5252, label: 'MED' },
+  { key: 'Ammo', color: 0xffa726, label: 'CEP', weight: 30 },
+  { key: 'MaxAmmo', color: 0x00ff88, label: 'MAX', weight: 10 },
+  { key: 'InstaKill', color: 0xffff00, label: 'IK', weight: 14 },
+  { key: 'Nuke', color: 0xffaa00, label: 'NUK', weight: 10 },
+  { key: 'DoublePoints', color: 0x00ff00, label: 'x2', weight: 18 },
+  { key: 'MedKit', color: 0xff5252, label: 'MED', weight: 18 },
 ];
 
 function addScore(base) {
@@ -682,7 +457,7 @@ function addScore(base) {
 function spawnPowerUp(pos, forcedKey = null) {
   const t = forcedKey
     ? POWERUP_TYPES.find((p) => p.key === forcedKey)
-    : POWERUP_TYPES[Math.floor(Math.random() * POWERUP_TYPES.length)];
+    : weightedPick(POWERUP_TYPES);
   const mat = new THREE.MeshStandardMaterial({
     color: t.color,
     emissive: t.color,
@@ -717,9 +492,9 @@ function applyPowerUp(key) {
     weaponManager.sfx.powerUp();
   }
   if (key === 'MaxAmmo') {
-    const w = weaponManager.active;
-    w.ammo = w.def.magazineSize;
-    w.reloading = false;
+    weaponManager.fillAllAmmo();
+  } else if (key === 'Ammo') {
+    weaponManager.addReserveAmmo();
   } else if (key === 'InstaKill') {
     instaKillUntil = performance.now() + 10000;
   } else if (key === 'Nuke') {
@@ -830,9 +605,11 @@ function buildGame() {
     eyeHeight: 1.6,
     playerRadius: 0.4,
     playerHeight: 1.8,
-    mouseSensitivity: 0.002,
+    mouseSensitivity: 0.002 * opts.sens,
   });
   controller.setObstacles(built.obstacles);
+  camera.fov = opts.fov;
+  camera.updateProjectionMatrix();
   controller.attachLegs(createLegsMesh());
 
   weaponManager = new WeaponManager(scene, camera, controller, {
@@ -852,8 +629,11 @@ function buildGame() {
       // Remove from targets immediately so it can't be shot again
       weaponManager.setTargets(enemies.filter(e => e.alive).map(e => e.group));
       if (enemy.type === 'brute') spawnPowerUp(enemy.group.position, 'MedKit');
+      else if (enemy.type === 'boss') spawnPowerUp(enemy.group.position, 'MaxAmmo');
       else if (Math.random() < 0.25) spawnPowerUp(enemy.group.position);
     },
+    // Reserve ran dry — point the player at ammo crates / MAX pickups.
+    onOutOfAmmo: () => showToast('YEDEK MERMI YOK — cephane kutusu bekle!'),
     // Noisemaker landed: every zombie nearby shambles over to investigate.
     onLure: (pos) => {
       let lured = 0;
@@ -866,6 +646,8 @@ function buildGame() {
       if (lured > 0) showToast(`${lured} zombi sesi duydu!`);
     },
   }, setup.attachments, setup.skins, setup.loadout);
+  weaponManager.hipFov = opts.fov;
+  weaponManager.sfx.setVolume(opts.volume);
   weaponManager.setTargets(built.targets);
 
   // --- Wall weapon: Thompson (E to grab, costs 1500) ---
@@ -911,6 +693,14 @@ function buildGame() {
       return;
     }
     if (e.code !== 'KeyE') return;
+    interactPrimary();
+  };
+  interactFn = interactPrimary;
+  document.addEventListener('keydown', onInteractKey);
+
+  /** E / gamepad-Y: nearest interaction (perk → barrier → wall gun → box). */
+  function interactPrimary() {
+    if (!controller) return;
     // Perk machines take priority over wall purchases.
     for (const m of machines) {
       if (m.mesh.position.distanceTo(controller.position) > 2.2) continue;
@@ -953,28 +743,38 @@ function buildGame() {
     }
     const thompsonDist = thompsonMesh.position.distanceTo(controller.position);
     if (thompsonDist < 2.0) {
-      const tIdx = weaponManager.weapons.findIndex((w) => w.def.name === 'Thompson');
-      if (tIdx < 0) {
-        showToast('Thompson loadout\'unda yok — menüden Gunsmith\'te seç');
-      } else if (score >= 1500) {
-        score -= 1500;
-        updateHUD();
-        weaponManager.switchTo(tIdx);
-        scene.remove(thompsonMesh);
-        showToast('Thompson Picked');
+      if (score < 1500) {
+        showToast('Puan yetmez — Thompson: 1500 puan');
+        return;
       }
+      score -= 1500;
+      updateHUD();
+      const granted = weaponManager.grantWeapon('Thompson');
+      scene.remove(thompsonMesh);
+      showToast(granted ? 'Thompson Picked' : 'Thompson zaten sende — mermi ikmali!');
+      weaponManager.sfx.powerUp();
       return;
     }
     const dist = mysteryBox.position.distanceTo(controller.position);
-    if (dist < 2.0 && score >= 950) {
+    if (dist < 2.0) {
+      if (score < 950) {
+        showToast('Puan yetmez — gizemli kutu: 950 puan');
+        return;
+      }
       score -= 950;
       updateHUD();
-      const randIdx = Math.floor(Math.random() * 3);
-      weaponManager.switchTo(randIdx);
-      showToast(`${weaponManager.weapons[randIdx].def.name} Picked`);
+      // CoD-style loot table: all 8 guns, weighted by rarity. Paying again on
+      // the same box is a reroll.
+      const gift = weightedPick(MYSTERY_POOL);
+      const granted = weaponManager.grantWeapon(gift.name);
+      weaponManager.sfx.powerUp();
+      showToast(
+        granted
+          ? `🎲 ${gift.rarity}: ${weaponManager.activeDef.label}!`
+          : `🎲 Aynısından vardı — cephane doldu (${gift.rarity})`
+      );
     }
-  };
-  document.addEventListener('keydown', onInteractKey);
+  }
 
   // Reset run state
   pendingRestart = false;
@@ -1009,6 +809,7 @@ function teardownGame() {
   if (!scene) return;
   document.removeEventListener('keydown', onInteractKey);
   onInteractKey = null;
+  interactFn = null;
 
   if (weaponManager) {
     weaponManager.dispose();
@@ -1021,7 +822,8 @@ function teardownGame() {
   // next game starts with a clean camera. The old scene (world, tracers,
   // effects) is released for GC when `scene` is reassigned.
   while (camera.children.length) camera.remove(camera.children[0]);
-  camera.fov = 75;
+  weaponManager?.sfx.stopMusic();
+  camera.fov = opts.fov;
   camera.updateProjectionMatrix();
 
   for (const e of enemies) e.release();
@@ -1075,6 +877,7 @@ startBtn.addEventListener('click', () => {
 });
 overlay.addEventListener('click', (e) => {
   if (e.target === startBtn || e.target.id === 'menuBtn') return;
+  if (e.target.closest?.('#pauseOptions')) return; // sliders must not lock the mouse
   if (pendingRestart) restartRun();
   else requestLock();
 });
@@ -1128,6 +931,32 @@ document.getElementById('statsResetBtn')?.addEventListener('click', () => {
   showStats();
 });
 
+// ── Pause settings: sensitivity / volume / FOV sliders ──
+const pausePanel = document.getElementById('pauseOptions');
+const optSensEl = document.getElementById('optSens');
+const optVolEl = document.getElementById('optVol');
+const optFovEl = document.getElementById('optFov');
+const optSensVal = document.getElementById('optSensVal');
+const optVolVal = document.getElementById('optVolVal');
+const optFovVal = document.getElementById('optFovVal');
+
+function syncPauseOptions() {
+  if (!pausePanel) return;
+  optSensEl.value = opts.sens;
+  optVolEl.value = opts.volume;
+  optFovEl.value = opts.fov;
+  optSensVal.textContent = `${Math.round(opts.sens * 100)}%`;
+  optVolVal.textContent = `${Math.round(opts.volume * 100)}%`;
+  optFovVal.textContent = `${Math.round(opts.fov)}°`;
+}
+
+if (pausePanel) {
+  optSensEl.addEventListener('input', () => { opts.sens = Number(optSensEl.value); applyOpts(); syncPauseOptions(); saveOpts(); });
+  optVolEl.addEventListener('input', () => { opts.volume = Number(optVolEl.value); applyOpts(); syncPauseOptions(); saveOpts(); });
+  optFovEl.addEventListener('input', () => { opts.fov = Number(optFovEl.value); applyOpts(); syncPauseOptions(); saveOpts(); });
+}
+syncPauseOptions();
+
 document.addEventListener('pointerlockchange', () => {
   const locked = document.pointerLockElement === canvas;
   if (locked) {
@@ -1136,13 +965,17 @@ document.addEventListener('pointerlockchange', () => {
     // Unlock audio (user gesture) and start the low war ambience.
     weaponManager?.sfx.unlock();
     weaponManager?.sfx.startAmbience();
+    weaponManager?.sfx.startMusic(waveIntensity(round));
   } else {
     if (scene && !pendingRestart) {
       overlay.querySelector('h1').textContent = 'FPZ';
       overlay.querySelector('p').textContent = 'Duraklatıldı — devam etmek için tıkla.';
       startBtn.textContent = '▶ Devam Et';
+      syncPauseOptions();
+      pausePanel?.classList.remove('hidden');
     }
     if (scene) overlay.classList.remove('hidden');
+    if (pendingRestart) pausePanel?.classList.add('hidden');
     if (weaponManager) weaponManager._firing = false;
   }
 });
@@ -1155,14 +988,53 @@ window.addEventListener('resize', () => {
 });
 
 // --- Main loop ---
+const gamepad = new GamepadInput();
 const clock = new THREE.Clock();
+
+/** Two-pass render: world (layer 0), then viewmodel over a cleared depth. */
+function renderWorld() {
+  camera.layers.set(0);
+  renderer.render(scene, camera);
+  // The gun must never be occluded by / embedded into walls, so the
+  // viewmodel pass clears the depth buffer first.
+  renderer.clearDepth();
+  camera.layers.set(1);
+  renderer.autoClear = false;
+  const prevBackground = scene.background;
+  scene.background = null;
+  renderer.render(scene, camera);
+  scene.background = prevBackground;
+  renderer.autoClear = true;
+}
 
 function animate() {
   requestAnimationFrame(animate);
-  const dt = clock.getDelta();
+  const dt = Math.min(clock.getDelta(), 0.05);
 
   // Menu is up: nothing to render (the menu's CSS background shows).
   if (!scene) return;
+
+  // Gamepad polling runs even while paused: Start toggles the pointer lock
+  // (and restarts a finished run), so a controller can drive everything.
+  gamepad.update(dt, {
+    controller,
+    weaponManager,
+    onInteract: () => {
+      if (interactFn && document.pointerLockElement === canvas) interactFn();
+    },
+    onPause: () => {
+      if (document.pointerLockElement === canvas) document.exitPointerLock();
+      else if (scene && pendingRestart) restartRun();
+      else if (scene) requestLock();
+    },
+  });
+
+  // True pause: pause overlay is up (pointer released) with a live run —
+  // show the frozen world but tick nothing.
+  if (document.pointerLockElement !== canvas && !pendingRestart) {
+    renderWorld();
+    return;
+  }
 
   controller.update(dt);
   weaponManager.update(dt);
@@ -1306,39 +1178,27 @@ function animate() {
           weaponManager.sfx.powerUp();
           updateHUD();
         } else {
-        // Freeze the run: clear the field and wait for "Play Again",
-        // which rebuilds everything via restartRun().
-        pendingRestart = true;
-        if (score > stats.bestScore) stats.bestScore = score;
-        if (round > stats.bestRound) stats.bestRound = round;
-        savePersisted();
-        for (const e of enemies) e.release();
-        enemies = [];
-        weaponManager.setTargets([]);
-        overlay.classList.remove('hidden');
-        overlay.querySelector('h1').textContent = 'GAME OVER';
-        overlay.querySelector('p').textContent = `Skor: ${score} · Tur: ${round}`;
-        startBtn.textContent = '↻ Tekrar Oyna';
-        document.exitPointerLock();
+          // Freeze the run: clear the field and wait for "Play Again",
+          // which rebuilds everything via restartRun().
+          pendingRestart = true;
+          if (score > stats.bestScore) stats.bestScore = score;
+          if (round > stats.bestRound) stats.bestRound = round;
+          savePersisted();
+          for (const e of enemies) e.release();
+          enemies = [];
+          weaponManager.setTargets([]);
+          overlay.classList.remove('hidden');
+          overlay.querySelector('h1').textContent = 'GAME OVER';
+          overlay.querySelector('p').textContent = `Skor: ${score} · Tur: ${round}`;
+          startBtn.textContent = '↻ Tekrar Oyna';
+          pausePanel?.classList.add('hidden');
+          document.exitPointerLock();
         }
       }
     }
   }
 
-  // Pass 1: world (layer 0).
-  camera.layers.set(0);
-  renderer.render(scene, camera);
-
-  // Pass 2: viewmodel (layer 1) with a cleared depth buffer so the gun
-  // is never occluded by / embedded into walls.
-  renderer.clearDepth();
-  camera.layers.set(1);
-  renderer.autoClear = false;
-  const prevBackground = scene.background;
-  scene.background = null;
-  renderer.render(scene, camera);
-  scene.background = prevBackground;
-  renderer.autoClear = true;
+  renderWorld();
 }
 
 animate();

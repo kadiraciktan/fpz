@@ -11,7 +11,9 @@ import {
   OPTIC_FOV,
   activeOptic,
   SKINS,
+  MYSTERY_POOL,
 } from './weapons/defs.js';
+import { initialReserve, reloadTransfer, AMMO_CRATE_FACTOR } from './weapons/ammo.js';
 import {
   ATTACH_ANCHORS,
   attachmentAvailable,
@@ -45,6 +47,7 @@ export {
   OPTIC_FOV,
   activeOptic,
   SKINS,
+  MYSTERY_POOL,
   applySkin,
   ATTACH_ANCHORS,
   attachmentAvailable,
@@ -93,41 +96,10 @@ export class WeaponManager {
     this.sfx = new Sfx();
 
     const names = Array.isArray(loadout) && loadout.length ? loadout : DEFAULT_LOADOUT;
-    this.weapons = names.map((name) => {
-      const def = WEAPON_DEFS.find((d) => d.name === name) || WEAPON_DEFS[0];
-      const att = { ...(this.attachments[def.name] || {}) };
-      // Drop attachments this weapon can't mount (defensive: stale setup).
-      for (const key of Object.keys(att)) {
-        if (!attachmentAvailable(def.name, key)) att[key] = false;
-      }
-      // Optics share one mount: keep only the first equipped optic.
-      let opticKept = false;
-      for (const key of OPTICS) {
-        if (!att[key]) continue;
-        if (opticKept) att[key] = false;
-        opticKept = true;
-      }
-      const skin = (this.skins && this.skins[def.name]) || 'default';
-      const mag = att.extendedMag
-        ? Math.round(def.magazineSize * 1.5)
-        : def.magazineSize;
-      const effDef = { ...def, magazineSize: mag, damage: att.suppressor ? Math.max(1, def.damage - (def.damage > 1 ? 1 : 0)) : def.damage };
-      const mesh = createGunMesh(effDef);
-      applySkin(mesh, skin);
-      // Attach attachment meshes (scope / suppressor / grip / mag / stock).
-      const attMeshes = buildAttachmentMeshes(effDef, att, mesh);
-      mesh.add(attMeshes);
-      return {
-        def: effDef,
-        att,
-        ammo: mag,
-        reloading: false,
-        reloadTimer: 0,
-        fireCooldown: 0,
-        mesh,
-      };
-    });
+    this.weapons = names.map((name) => this._makeWeapon(name));
 
+    // Base (hip-fire) field of view — settings menu can change it.
+    this.hipFov = 75;
     this.activeIndex = 0;
     this._firing = false;
     this._aiming = false;
@@ -188,6 +160,90 @@ export class WeaponManager {
     this._shootingTargets = targets;
   }
 
+  /** Build one weapon entry (def + meshes + magazine/reserve) by name. */
+  _makeWeapon(name) {
+    const def = WEAPON_DEFS.find((d) => d.name === name) || WEAPON_DEFS[0];
+    const att = { ...(this.attachments[def.name] || {}) };
+    // Drop attachments this weapon can't mount (defensive: stale setup).
+    for (const key of Object.keys(att)) {
+      if (!attachmentAvailable(def.name, key)) att[key] = false;
+    }
+    // Optics share one mount: keep only the first equipped optic.
+    let opticKept = false;
+    for (const key of OPTICS) {
+      if (!att[key]) continue;
+      if (opticKept) att[key] = false;
+      opticKept = true;
+    }
+    const skin = (this.skins && this.skins[def.name]) || 'default';
+    const mag = att.extendedMag
+      ? Math.round(def.magazineSize * 1.5)
+      : def.magazineSize;
+    const effDef = { ...def, magazineSize: mag, damage: att.suppressor ? Math.max(1, def.damage - (def.damage > 1 ? 1 : 0)) : def.damage };
+    const mesh = createGunMesh(effDef);
+    applySkin(mesh, skin);
+    // Attach attachment meshes (scope / suppressor / grip / mag / stock).
+    const attMeshes = buildAttachmentMeshes(effDef, att, mesh);
+    mesh.add(attMeshes);
+    return {
+      def: effDef,
+      att,
+      ammo: mag,
+      reserve: initialReserve(mag),
+      reloading: false,
+      reloadTimer: 0,
+      fireCooldown: 0,
+      mesh,
+    };
+  }
+
+  /**
+   * Mystery-box gift: replace the ACTIVE slot with a new gun and draw it.
+   * If the weapon is already in the loadout, it is topped up instead and
+   * null is returned (no slot was replaced).
+   */
+  grantWeapon(name) {
+    const owned = this.weapons.findIndex((w) => w.def.name === name);
+    if (owned >= 0) {
+      const w = this.weapons[owned];
+      w.ammo = w.def.magazineSize;
+      w.reserve = Math.max(w.reserve, initialReserve(w.def.magazineSize));
+      this.switchTo(owned);
+      return null;
+    }
+    // _attachActiveGun() removes the previous gun from the camera; free the
+    // per-gun skin materials it leaves behind (geometry is shared/cached).
+    const old = this.active;
+    old.mesh.traverse((o) => {
+      if (o.isMesh && o.material && o.material.map) o.material.dispose();
+    });
+    this.weapons[this.activeIndex] = this._makeWeapon(name);
+    this._attachActiveGun();
+    this._updateHUD();
+    return this.activeDef.name;
+  }
+
+  /** MAX ammo pickup: every gun full, magazine + reserve. */
+  fillAllAmmo() {
+    for (const w of this.weapons) {
+      w.ammo = w.def.magazineSize;
+      w.reserve = initialReserve(w.def.magazineSize);
+      w.reloading = false;
+    }
+    this._updateHUD();
+  }
+
+  /** Ammo crate: top up the reserve of every gun by 1.5 magazines. */
+  addReserveAmmo() {
+    for (const w of this.weapons) {
+      w.reserve = Math.min(
+        initialReserve(w.def.magazineSize),
+        w.reserve + Math.round(w.def.magazineSize * AMMO_CRATE_FACTOR)
+      );
+    }
+    this._updateHUD();
+  }
+
   get active() {
     return this.weapons[this.activeIndex];
   }
@@ -236,6 +292,19 @@ export class WeaponManager {
     this.switchTo((this.activeIndex + 1) % this.weapons.length);
   }
 
+  switchPrev() {
+    this.switchTo((this.activeIndex - 1 + this.weapons.length) % this.weapons.length);
+  }
+
+  /** Gamepad input bridge (trigger held / ADS held). */
+  setFiring(on) {
+    this._firing = !!on;
+  }
+
+  setAiming(on) {
+    this._aiming = !!on;
+  }
+
   _bindInput() {
     this._onMouseDown = (e) => {
       if (e.button === 0 && document.pointerLockElement === this.controller.domElement) {
@@ -271,6 +340,7 @@ export class WeaponManager {
     window.removeEventListener('mouseup', this._onMouseUp);
     window.removeEventListener('keydown', this._onKeyDown);
     window.removeEventListener('contextmenu', this._onContextMenu);
+    this.sfx.dispose();
     for (const l of this._flashLights) this.scene.remove(l);
     for (const d of this._decals) this.scene.remove(d);
     this._decalMat.dispose();
@@ -530,6 +600,15 @@ export class WeaponManager {
   reload() {
     const w = this.active;
     if (w.reloading || w.ammo === w.def.magazineSize) return;
+    // Finite reserve: an empty reserve means no reload — dry click instead.
+    if (reloadTransfer(w.ammo, w.def.magazineSize, w.reserve) <= 0) {
+      if (this._dryCd <= 0) {
+        this._dryCd = 0.6; // throttle: auto-fire on an empty reserve = one click
+        this.sfx.clatter(false);
+        if (this.callbacks.onOutOfAmmo) this.callbacks.onOutOfAmmo();
+      }
+      return;
+    }
     w.reloading = true;
     w.reloadDur = w.def.reloadTime * (this.perks.speedCola ? 0.6 : 1);
     w.reloadTimer = w.reloadDur;
@@ -547,7 +626,7 @@ export class WeaponManager {
     const w = this.active;
     const optic = activeOptic(w.att);
     const scoped = optic === 'scope' && this._aiming;
-    const targetFov = this._aiming ? (optic ? OPTIC_FOV[optic] : 55) : 75;
+    const targetFov = this._aiming ? (optic ? OPTIC_FOV[optic] : 55) : this.hipFov || 75;
     // Foregrip speeds up the aim-down-sights transition.
     const speed = w.att.foregrip ? 18 : 12;
     if (Math.abs(this.camera.fov - targetFov) > 0.05) {
@@ -645,6 +724,7 @@ export class WeaponManager {
     this._updateAiming(dt);
     if (this._firing) this._tryShoot();
     if (w.fireCooldown > 0) w.fireCooldown -= dt;
+    if (this._dryCd > 0) this._dryCd -= dt;
     if (this._meleeCd > 0) this._meleeCd -= dt;
     if (this._meleeT > 0) this._meleeT = Math.max(0, this._meleeT - dt);
     this._nadesUpdate(dt);
@@ -652,7 +732,10 @@ export class WeaponManager {
       w.reloadTimer -= dt;
       if (w.reloadTimer <= 0) {
         w.reloading = false;
-        w.ammo = w.def.magazineSize;
+        // Draw from the finite reserve: a half-full reserve = half mag.
+        const take = reloadTransfer(w.ammo, w.def.magazineSize, w.reserve);
+        w.ammo += take;
+        w.reserve -= take;
         this.sfx.reloadEnd();
         this._updateHUD();
       }
@@ -797,7 +880,7 @@ export class WeaponManager {
     if (this._ammoEl) {
       this._ammoEl.textContent = w.reloading
         ? 'RELOADING...'
-        : `${w.ammo} / ${w.def.magazineSize}`;
+        : `${w.ammo} ▸ ${w.reserve}`;
     }
     if (this._weaponEl) {
       this._weaponEl.textContent = w.def.name;
