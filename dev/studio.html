@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Asset Studio — Three.js FPS Starter</title>
+<style>
+  :root {
+    --bg: #0d0f12;
+    --panel: #161a20;
+    --panel2: #1c2129;
+    --border: #2a313c;
+    --text: #d7dee8;
+    --muted: #8b97a6;
+    --accent: #ff6b3d;
+    --ok: #46d19a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", system-ui, -apple-system, Arial, sans-serif;
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    height: 100vh;
+    overflow: hidden;
+  }
+  header {
+    grid-column: 1 / 3;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .3px; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  header .spacer { flex: 1; }
+  header .badge {
+    font-size: 11px; color: var(--ok);
+    border: 1px solid var(--border); border-radius: 999px;
+    padding: 3px 10px; background: var(--panel2);
+  }
+  #sidebar {
+    border-right: 1px solid var(--border);
+    background: var(--panel);
+    overflow-y: auto;
+    display: flex; flex-direction: column;
+  }
+  .section-title {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .8px;
+    color: var(--muted); padding: 12px 16px 6px;
+  }
+  #assetList { list-style: none; margin: 0; padding: 0 8px; }
+  #assetList li {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 10px; border-radius: 8px; cursor: pointer;
+    font-size: 13px; margin-bottom: 2px;
+  }
+  #assetList li:hover { background: var(--panel2); }
+  #assetList li.active { background: var(--accent); color: #1a120c; font-weight: 600; }
+  #assetList .swatch {
+    width: 14px; height: 14px; border-radius: 3px;
+    border: 1px solid var(--border); flex: 0 0 auto;
+  }
+  #parts { margin: 0; padding: 0 16px 16px; font-size: 12px; color: var(--muted);
+           line-height: 1.7; }
+  #parts b { color: var(--text); font-weight: 600; }
+  .meta { padding: 8px 16px; font-size: 12px; color: var(--muted); }
+  .meta span { color: var(--text); }
+
+  #stage { position: relative; }
+  #view { width: 100%; height: 100%; display: block; }
+  #controls {
+    position: absolute; left: 14px; bottom: 14px;
+    background: rgba(13,15,18,.72); backdrop-filter: blur(6px);
+    border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 12px; font-size: 12px; color: var(--muted);
+    max-width: 260px; line-height: 1.6;
+  }
+  #controls .row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+  #controls label { color: var(--text); }
+  #texWrap {
+    position: absolute; right: 14px; top: 14px;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 10px; display: none;
+  }
+  #texWrap h3 { margin: 0 0 8px; font-size: 12px; color: var(--muted); font-weight: 600; }
+  #texCanvas { image-rendering: pixelated; display: block; border-radius: 4px;
+               border: 1px solid var(--border); }
+  #texLabel { font-size: 11px; color: var(--muted); margin-top: 6px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Asset Studio</h1>
+    <div class="sub">buildModel / buildTexture pipeline viewer</div>
+    <div class="spacer"></div>
+    <div class="badge" id="status">loading…</div>
+  </header>
+
+  <aside id="sidebar">
+    <div class="section-title">Models</div>
+    <ul id="assetList"></ul>
+    <div class="section-title" id="metaTitle" style="display:none">Details</div>
+    <div class="meta" id="meta"></div>
+    <div class="section-title" id="partsTitle" style="display:none">Parts</div>
+    <div id="parts"></div>
+  </aside>
+
+  <main id="stage">
+    <canvas id="view"></canvas>
+    <div id="texWrap">
+      <h3>Texture</h3>
+      <canvas id="texCanvas" width="128" height="128"></canvas>
+      <div id="texLabel"></div>
+    </div>
+    <div id="controls">
+      <b style="color:var(--text)">Controls</b>
+      <div>Sürükle: döndür · Tekerlek: zoom · Tıkla: parça seç</div>
+      <div class="row">
+        <label><input type="checkbox" id="turntable" checked> Turntable</label>
+      </div>
+      <div class="row">
+        <label><input type="checkbox" id="wireframe"> Wireframe</label>
+      </div>
+      <div class="row">
+        <label><input type="checkbox" id="grid" checked> Grid</label>
+      </div>
+    </div>
+  </main>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+    }
+  }
+  </script>
+  <script type="module" src="./studio.js"></script>
+</body>
+</html>

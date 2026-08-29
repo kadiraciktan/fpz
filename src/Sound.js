@@ -1,0 +1,478 @@
+/**
+ * Sound.js
+ * Procedural sound effects via the Web Audio API (no audio files needed).
+ * All sounds are synthesized: gunshots, reloads, hits, and a low war ambience.
+ *
+ * Usage:
+ *   const sfx = new Sfx();
+ *   sfx.unlock();          // call on first user gesture (pointer lock click)
+ *   sfx.shoot('Pistol');
+ *   sfx.reloadStart(); sfx.reloadEnd();
+ *   sfx.enemyHit(); sfx.enemyDeath();
+ *   sfx.startAmbience();
+ */
+export class Sfx {
+  constructor() {
+    this.ctx = null;
+    this.master = null;
+    this._ambienceNodes = [];
+  }
+
+  /** Create the AudioContext lazily (must happen after a user gesture). */
+  unlock() {
+    if (this.ctx) {
+      if (this.ctx.state === 'suspended') this.ctx.resume();
+      return;
+    }
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    this.ctx = new AC();
+    this.master = this.ctx.createGain();
+    this.master.gain.value = 0.5;
+    this.master.connect(this.ctx.destination);
+  }
+
+  _now() {
+    return this.ctx ? this.ctx.currentTime : 0;
+  }
+
+  /**
+   * Gunshot: sharp crack transient + body burst + deep chest thump + a
+   * short tail echo, for a punchy street-echo feel.
+   * Different weapons get slightly different pitch/length.
+   */
+  shoot(weaponName = 'Pistol') {
+    if (!this.ctx) return;
+    const t = this._now();
+    const profiles = {
+      Pistol: { noise: 0.09, bp: 1800, thump: 120, crack: 0.5, tail: 0.1 },
+      Rifle: { noise: 0.14, bp: 1200, thump: 90, crack: 0.55, tail: 0.14 },
+      Shotgun: { noise: 0.2, bp: 800, thump: 62, crack: 0.75, tail: 0.22 },
+      Thompson: { noise: 0.07, bp: 2200, thump: 140, crack: 0.45, tail: 0.08 },
+    };
+    const p = profiles[weaponName] || profiles.Pistol;
+
+    // Noise burst (body of the shot)
+    const noise = this._noiseBuffer(p.noise + 0.05);
+    const src = this.ctx.createBufferSource();
+    src.buffer = noise;
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = p.bp;
+    bp.Q.value = 0.8;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.9, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + p.noise);
+    src.connect(bp).connect(g).connect(this.master);
+    src.start(t);
+    src.stop(t + p.noise + 0.05);
+
+    // High crack transient: the initial "shot" snap that hits first
+    const crackBuf = this._noiseBuffer(0.02);
+    const crack = this.ctx.createBufferSource();
+    crack.buffer = crackBuf;
+    const hp = this.ctx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = 3000;
+    const cg = this.ctx.createGain();
+    cg.gain.setValueAtTime(p.crack, t);
+    cg.gain.exponentialRampToValueAtTime(0.001, t + 0.02);
+    crack.connect(hp).connect(cg).connect(this.master);
+    crack.start(t);
+    crack.stop(t + 0.03);
+
+    // Low thump (chest hit)
+    const osc = this.ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(p.thump, t);
+    osc.frequency.exponentialRampToValueAtTime(35, t + 0.14);
+    const og = this.ctx.createGain();
+    og.gain.setValueAtTime(0.7, t);
+    og.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+    osc.connect(og).connect(this.master);
+    osc.start(t);
+    osc.stop(t + 0.2);
+
+    // Tail echo: a quieter, darker copy of the burst a few ms later
+    const tailBuf = this._noiseBuffer(p.tail);
+    const tail = this.ctx.createBufferSource();
+    tail.buffer = tailBuf;
+    const tlp = this.ctx.createBiquadFilter();
+    tlp.type = 'lowpass';
+    tlp.frequency.value = p.bp * 0.5;
+    const tg = this.ctx.createGain();
+    const te = t + 0.035;
+    tg.gain.setValueAtTime(0.16, te);
+    tg.gain.exponentialRampToValueAtTime(0.001, te + p.tail);
+    tail.connect(tlp).connect(tg).connect(this.master);
+    tail.start(te);
+    tail.stop(te + p.tail + 0.02);
+  }
+
+  /**
+   * Suppressed gunshot: muffled mechanical click + low-pressure hiss,
+   * no crack and no tail echo.
+   */
+  shootSuppressed(weaponName = 'Pistol') {
+    if (!this.ctx) return;
+    const t = this._now();
+
+    // Muffled body: low-passed short noise
+    const noise = this._noiseBuffer(0.08);
+    const src = this.ctx.createBufferSource();
+    src.buffer = noise;
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 900;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.45, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
+    src.connect(lp).connect(g).connect(this.master);
+    src.start(t);
+    src.stop(t + 0.1);
+
+    // Gas hiss
+    const hiss = this._noiseBuffer(0.12);
+    const hsrc = this.ctx.createBufferSource();
+    hsrc.buffer = hiss;
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = 2400;
+    bp.Q.value = 1.2;
+    const hg = this.ctx.createGain();
+    hg.gain.setValueAtTime(0.18, t + 0.01);
+    hg.gain.exponentialRampToValueAtTime(0.001, t + 0.13);
+    hsrc.connect(bp).connect(hg).connect(this.master);
+    hsrc.start(t + 0.01);
+    hsrc.stop(t + 0.14);
+
+    // Soft mechanical thump
+    const osc = this.ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(90, t);
+    osc.frequency.exponentialRampToValueAtTime(45, t + 0.07);
+    const og = this.ctx.createGain();
+    og.gain.setValueAtTime(0.28, t);
+    og.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+    osc.connect(og).connect(this.master);
+    osc.start(t);
+    osc.stop(t + 0.09);
+  }
+
+  /** Reload start: a mechanical clack. */
+  reloadStart() {
+    if (!this.ctx) return;
+    const t = this._now();
+    this._clack(t, 900, 0.05, 0.4);
+  }
+
+  /** Reload end: a firmer snap (magazine seated / bolt closed). */
+  reloadEnd() {
+    if (!this.ctx) return;
+    const t = this._now();
+    this._clack(t, 500, 0.08, 0.6);
+    this._clack(t + 0.06, 1400, 0.04, 0.35);
+  }
+
+  /** Enemy hit: meaty impact — low thud + wet splat + subtle crunch. */
+  enemyHit() {
+    if (!this.ctx) return;
+    const t = this._now();
+    // Low body thud
+    const osc = this.ctx.createOscillator();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(260, t);
+    osc.frequency.exponentialRampToValueAtTime(70, t + 0.09);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.5, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+    osc.connect(g).connect(this.master);
+    osc.start(t);
+    osc.stop(t + 0.13);
+    // Wet splat: short mid-band noise
+    this._clack(t + 0.005, 700, 0.06, 0.5);
+    // Subtle crunch layer
+    this._clack(t + 0.012, 2600, 0.03, 0.22);
+  }
+
+  /** Enemy death: heavier impact + guttural groan. */
+  enemyDeath() {
+    if (!this.ctx) return;
+    const t = this._now();
+    const osc = this.ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(140, t);
+    osc.frequency.exponentialRampToValueAtTime(45, t + 0.25);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.65, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+    osc.connect(g).connect(this.master);
+    osc.start(t);
+    osc.stop(t + 0.32);
+    // Guttural groan layered under the thud
+    const groan = this.ctx.createOscillator();
+    groan.type = 'sawtooth';
+    groan.frequency.setValueAtTime(110, t + 0.02);
+    groan.frequency.exponentialRampToValueAtTime(55, t + 0.35);
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 400;
+    const gg = this.ctx.createGain();
+    gg.gain.setValueAtTime(0.18, t + 0.02);
+    gg.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
+    groan.connect(lp).connect(gg).connect(this.master);
+    groan.start(t + 0.02);
+    groan.stop(t + 0.42);
+    this._clack(t, 500, 0.09, 0.55);
+  }
+
+  /** Player hurt: dull thwack + short tinnitus ring. */
+  playerHurt() {
+    if (!this.ctx) return;
+    const t = this._now();
+    const osc = this.ctx.createOscillator();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(160, t);
+    osc.frequency.exponentialRampToValueAtTime(60, t + 0.1);
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 500;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.35, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
+    osc.connect(lp).connect(g).connect(this.master);
+    osc.start(t);
+    osc.stop(t + 0.15);
+    // Ringing ear
+    const ring = this.ctx.createOscillator();
+    ring.type = 'sine';
+    ring.frequency.value = 1900;
+    const rg = this.ctx.createGain();
+    rg.gain.setValueAtTime(0.08, t);
+    rg.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
+    ring.connect(rg).connect(this.master);
+    ring.start(t);
+    ring.stop(t + 0.36);
+  }
+
+  /** Power-up pickup: a short rising blip. */
+  powerUp() {
+    if (!this.ctx) return;
+    const t = this._now();
+    const osc = this.ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(500, t);
+    osc.frequency.exponentialRampToValueAtTime(1000, t + 0.12);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.3, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+    osc.connect(g).connect(this.master);
+    osc.start(t);
+    osc.stop(t + 0.2);
+  }
+
+  /**
+   * Low war ambience: a filtered noise bed (distant wind / rumble) plus a
+   * very slow low pulse. Starts once; safe to call repeatedly.
+   */
+  startAmbience() {
+    if (!this.ctx || this._ambienceNodes.length) return;
+    const t = this._now();
+
+    // Filtered noise bed
+    const noise = this._noiseBuffer(2.0, true);
+    const src = this.ctx.createBufferSource();
+    src.buffer = noise;
+    src.loop = true;
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 300;
+    const g = this.ctx.createGain();
+    g.gain.value = 0.06;
+    src.connect(lp).connect(g).connect(this.master);
+    src.start(t);
+    this._ambienceNodes.push(src, lp, g);
+
+    // Slow low pulse (distant explosions / rumble)
+    const osc = this.ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.value = 38;
+    const og = this.ctx.createGain();
+    og.gain.value = 0.04;
+    const lfo = this.ctx.createOscillator();
+    lfo.frequency.value = 0.15;
+    const lfoGain = this.ctx.createGain();
+    lfoGain.gain.value = 0.03;
+    lfo.connect(lfoGain).connect(og.gain);
+    osc.connect(og).connect(this.master);
+    osc.start(t);
+    lfo.start(t);
+    this._ambienceNodes.push(osc, og, lfo, lfoGain);
+  }
+
+  /** Zombie growl: detuned guttural murmur, played by nearby walkers. */
+  zombieGrowl(vol = 0.3) {
+    if (!this.ctx) return;
+    const t = this._now();
+    const osc = this.ctx.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(70 + Math.random() * 40, t);
+    osc.frequency.linearRampToValueAtTime(50, t + 0.55);
+    const wob = this.ctx.createOscillator(); // throat wobble
+    wob.frequency.value = 9 + Math.random() * 5;
+    const wobG = this.ctx.createGain();
+    wobG.gain.value = 14;
+    wob.connect(wobG).connect(osc.frequency);
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 340;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.12);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.7);
+    osc.connect(lp).connect(g).connect(this.master);
+    osc.start(t);
+    wob.start(t);
+    osc.stop(t + 0.75);
+    wob.stop(t + 0.75);
+  }
+
+  /** Zombie death scream: rising-then-falling guttural shriek. */
+  zombieScream() {
+    if (!this.ctx) return;
+    const t = this._now();
+    const osc = this.ctx.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(160, t);
+    osc.frequency.exponentialRampToValueAtTime(320, t + 0.12);
+    osc.frequency.exponentialRampToValueAtTime(60, t + 0.55);
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = 700;
+    bp.Q.value = 3.0;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.28, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.6);
+    osc.connect(bp).connect(g).connect(this.master);
+    osc.start(t);
+    osc.stop(t + 0.65);
+    this.zombieGrowl(0.22);
+  }
+
+  /** Bomber detonation: boom + debris crackle. */
+  explosion() {
+    if (!this.ctx) return;
+    const t = this._now();
+    // Boom: big low-passed noise slam
+    const noise = this._noiseBuffer(0.55);
+    const src = this.ctx.createBufferSource();
+    src.buffer = noise;
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(1600, t);
+    lp.frequency.exponentialRampToValueAtTime(120, t + 0.5);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(1.0, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.55);
+    src.connect(lp).connect(g).connect(this.master);
+    src.start(t);
+    src.stop(t + 0.6);
+    // Sub-bass chest punch
+    const osc = this.ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(85, t);
+    osc.frequency.exponentialRampToValueAtTime(28, t + 0.35);
+    const og = this.ctx.createGain();
+    og.gain.setValueAtTime(0.9, t);
+    og.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
+    osc.connect(og).connect(this.master);
+    osc.start(t);
+    osc.stop(t + 0.45);
+    // Debris crackle tail
+    for (let i = 0; i < 4; i++) {
+      this._clack(t + 0.12 + Math.random() * 0.35, 1800 + Math.random() * 1500, 0.03, 0.15);
+    }
+  }
+
+  /** Melee swing: filtered air whoosh. */
+  meleeWhoosh() {
+    if (!this.ctx) return;
+    const t = this._now();
+    const noise = this._noiseBuffer(0.18);
+    const src = this.ctx.createBufferSource();
+    src.buffer = noise;
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.setValueAtTime(500, t);
+    bp.frequency.exponentialRampToValueAtTime(2600, t + 0.12);
+    bp.Q.value = 1.4;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.001, t);
+    g.gain.exponentialRampToValueAtTime(0.35, t + 0.05);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.17);
+    src.connect(bp).connect(g).connect(this.master);
+    src.start(t);
+    src.stop(t + 0.2);
+  }
+
+  /** Low heartbeat thump (lub-dub) for critical HP state. */
+  heartbeat() {
+    if (!this.ctx) return;
+    const t = this._now();
+    for (const [off, vol] of [[0, 0.5], [0.16, 0.32]]) {
+      const osc = this.ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(58, t + off);
+      osc.frequency.exponentialRampToValueAtTime(32, t + off + 0.1);
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(vol, t + off);
+      g.gain.exponentialRampToValueAtTime(0.001, t + off + 0.12);
+      osc.connect(g).connect(this.master);
+      osc.start(t + off);
+      osc.stop(t + off + 0.14);
+    }
+  }
+
+  /** Noisemaker: metallic clatter of a can hitting the ground. */
+  clatter(big = false) {
+    if (!this.ctx) return;
+    const t = this._now();
+    const n = big ? 4 : 2;
+    for (let i = 0; i < n; i++) {
+      this._clack(t + i * (0.05 + Math.random() * 0.05), 2400 + Math.random() * 1800, 0.04, big ? 0.5 : 0.25);
+    }
+  }
+
+  /** A short filtered click (used for reload mechanics). */
+  _clack(t, freq, dur, vol) {
+    const noise = this._noiseBuffer(dur + 0.02);
+    const src = this.ctx.createBufferSource();
+    src.buffer = noise;
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = freq;
+    bp.Q.value = 2.0;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    src.connect(bp).connect(g).connect(this.master);
+    src.start(t);
+    src.stop(t + dur + 0.02);
+  }
+
+  /**
+   * Generate a white-noise buffer.
+   * @param {number} seconds
+   * @param {boolean} [loop] - mark as loopable (ambience)
+   */
+  _noiseBuffer(seconds, loop = false) {
+    const rate = this.ctx.sampleRate;
+    const len = Math.max(1, Math.floor(rate * seconds));
+    const buf = this.ctx.createBuffer(1, len, rate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) {
+      data[i] = Math.random() * 2 - 1;
+    }
+    return buf;
+  }
+}

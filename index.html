@@ -1,0 +1,917 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FPZ — First Person Zombies</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+    #game { display: block; width: 100%; height: 100%; }
+
+    /* Crosshair */
+    #crosshair {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 24px;
+      height: 24px;
+      pointer-events: none;
+      z-index: 10;
+    }
+    #crosshair::before,
+    #crosshair::after {
+      content: "";
+      position: absolute;
+      background: rgba(255, 255, 255, 0.9);
+      box-shadow: 0 0 2px rgba(0,0,0,0.8);
+    }
+    #crosshair::before {
+      top: 50%; left: 50%;
+      width: 100%; height: 2px;
+      transform: translate(-50%, -50%);
+    }
+    #crosshair::after {
+      top: 50%; left: 50%;
+      width: 2px; height: 100%;
+      transform: translate(-50%, -50%);
+    }
+
+    /* Hit marker (CoD-style): flashes on bullet impact, red on kills */
+    #hitmarker {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      width: 22px;
+      height: 22px;
+      transform: translate(-50%, -50%) rotate(45deg);
+      opacity: 0;
+      pointer-events: none;
+      z-index: 11;
+    }
+    #hitmarker::before,
+    #hitmarker::after {
+      content: "";
+      position: absolute;
+      filter: drop-shadow(0 0 2px rgba(0,0,0,0.9));
+    }
+    #hitmarker::before {
+      top: 0; left: 50%;
+      width: 2px; height: 100%;
+      transform: translateX(-50%);
+      background: linear-gradient(to bottom,
+        rgba(255,255,255,0.95) 0 32%, transparent 32% 68%,
+        rgba(255,255,255,0.95) 68% 100%);
+    }
+    #hitmarker::after {
+      left: 0; top: 50%;
+      height: 2px; width: 100%;
+      transform: translateY(-50%);
+      background: linear-gradient(to right,
+        rgba(255,255,255,0.95) 0 32%, transparent 32% 68%,
+        rgba(255,255,255,0.95) 68% 100%);
+    }
+    #hitmarker.kill::before {
+      background: linear-gradient(to bottom,
+        #ff3b30 0 32%, transparent 32% 68%, #ff3b30 68% 100%);
+    }
+    #hitmarker.kill::after {
+      background: linear-gradient(to right,
+        #ff3b30 0 32%, transparent 32% 68%, #ff3b30 68% 100%);
+    }
+    #hitmarker.show {
+      animation: hitmark 0.28s ease-out forwards;
+    }
+    @keyframes hitmark {
+      0%   { opacity: 1; transform: translate(-50%, -50%) rotate(45deg) scale(1.3); }
+      100% { opacity: 0; transform: translate(-50%, -50%) rotate(45deg) scale(0.85); }
+    }
+
+    /* HUD — WaW (2008) askeri yerleşim: sağ alt mermi, sağ üst skor, sol alt round */
+    #hud {
+      position: fixed;
+      inset: 0;
+      color: #e8e4d8;
+      font-family: "Courier New", Courier, monospace;
+      font-size: 14px;
+      z-index: 10;
+      pointer-events: none;
+      text-shadow: 0 1px 2px rgba(0,0,0,0.9);
+    }
+    #round {
+      position: absolute;
+      bottom: 18px;
+      left: 18px;
+      padding: 6px 14px;
+      background: rgba(20, 24, 18, 0.72);
+      border: 1px solid rgba(180, 170, 140, 0.45);
+      font-size: 16px;
+      font-weight: bold;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+    #score {
+      position: absolute;
+      top: 18px;
+      right: 18px;
+      padding: 6px 14px;
+      background: rgba(20, 24, 18, 0.72);
+      border: 1px solid rgba(180, 170, 140, 0.45);
+      font-size: 18px;
+      font-weight: bold;
+      letter-spacing: 1px;
+    }
+    #ammo {
+      position: absolute;
+      bottom: 18px;
+      right: 18px;
+      font-size: 34px;
+      font-weight: bold;
+      letter-spacing: 2px;
+      color: #f0ead8;
+      text-shadow: 0 2px 4px rgba(0,0,0,0.95);
+    }
+    #health {
+      position: absolute;
+      bottom: 64px;
+      right: 18px;
+      font-size: 14px;
+      letter-spacing: 1px;
+      color: #c8c0a8;
+    }
+    #weaponName {
+      position: absolute;
+      bottom: 92px;
+      right: 18px;
+      font-size: 12px;
+      letter-spacing: 1px;
+      color: #a8a088;
+      text-transform: uppercase;
+    }
+    /* Grenade + sandbag gear readout */
+    #gear {
+      position: absolute;
+      bottom: 18px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 4px 14px;
+      background: rgba(20, 24, 18, 0.72);
+      border: 1px solid rgba(180, 170, 140, 0.45);
+      font-size: 14px;
+      font-weight: bold;
+      letter-spacing: 1px;
+      color: #cfe8a0;
+    }
+    /* Next-wave countdown (prep phase) */
+    #prep {
+      position: absolute;
+      top: 58px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 6px 18px;
+      background: rgba(33, 64, 24, 0.82);
+      border: 1px solid #8bc34a;
+      color: #c5e1a5;
+      font-size: 15px;
+      font-weight: bold;
+      letter-spacing: 2px;
+    }
+    /* Owned perks strip (bottom-left, under the round badge) */
+    #perks {
+      position: absolute;
+      bottom: 58px;
+      left: 18px;
+      font-size: 13px;
+      letter-spacing: 1px;
+      color: #ffe082;
+      text-shadow: 0 1px 3px rgba(0,0,0,0.95);
+    }
+    .gsXp {
+      font-size: 10px;
+      color: #ffd54f;
+      margin-left: 6px;
+    }
+    /* Lifetime stats screen */
+    #statsScreen {
+      position: fixed;
+      inset: 0;
+      z-index: 60;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      background: rgba(10, 12, 10, 0.94);
+      color: #e8e4d8;
+      font-family: "Courier New", Courier, monospace;
+    }
+    #statsScreen.hidden { display: none; }
+    .statRow {
+      display: flex;
+      justify-content: space-between;
+      width: 340px;
+      padding: 8px 14px;
+      background: rgba(20, 24, 18, 0.8);
+      border: 1px solid rgba(180, 170, 140, 0.35);
+      letter-spacing: 1px;
+    }
+
+    /* Toast notifications (wave cleared, pickups, ...) */
+    #toasts {
+      position: fixed;
+      top: 64px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      z-index: 15;
+      pointer-events: none;
+    }
+    .toast {
+      padding: 6px 18px;
+      background: rgba(20, 24, 18, 0.85);
+      border: 1px solid rgba(180, 170, 140, 0.55);
+      color: #f0ead8;
+      font-family: "Courier New", Courier, monospace;
+      font-size: 15px;
+      font-weight: bold;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      text-shadow: 0 1px 2px rgba(0,0,0,0.9);
+      animation: toastIn 0.25s ease-out, toastOut 0.4s ease-in 2.2s forwards;
+    }
+    @keyframes toastIn {
+      from { opacity: 0; transform: translateY(-8px) scale(0.96); }
+      to   { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    @keyframes toastOut {
+      to { opacity: 0; transform: translateY(-6px); }
+    }
+
+    /* Red damage vignette flash when the player is hit */
+    #damage {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 12;
+      opacity: 0;
+      background: radial-gradient(ellipse at center,
+        transparent 45%, rgba(170, 10, 10, 0.55) 100%);
+    }
+    #damage.show {
+      animation: dmgflash 0.5s ease-out forwards;
+    }
+    @keyframes dmgflash {
+      0% { opacity: 1; }
+      100% { opacity: 0; }
+    }
+
+    /* Sniper scope overlay (shown when aiming down a scoped weapon) */
+    #scopeOverlay {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 9;
+      display: none;
+      background: radial-gradient(circle at 50% 50%,
+        transparent 0 26%, rgba(0,0,0,0.92) 30% 100%);
+    }
+    #scopeOverlay.show { display: block; }
+    #scopeOverlay::before,
+    #scopeOverlay::after {
+      content: "";
+      position: absolute;
+      left: 50%; top: 50%;
+      background: rgba(10, 10, 10, 0.85);
+    }
+    #scopeOverlay::before {
+      width: 1px; height: 62vh;
+      transform: translate(-50%, -50%);
+    }
+    #scopeOverlay::after {
+      height: 1px; width: 62vh;
+      transform: translate(-50%, -50%);
+    }
+
+    /* Start / pause overlay */
+    #overlay {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.7);
+      color: #fff;
+      font-family: Georgia, serif;
+      z-index: 20;
+      text-align: center;
+    }
+    #overlay h1 {
+      font-family: Impact, "Arial Black", sans-serif;
+      font-size: 64px;
+      letter-spacing: 12px;
+      padding-left: 12px;
+      margin-bottom: 12px;
+      background: linear-gradient(180deg, #fff6dd 0%, #e8b53a 45%, #a3230f 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      filter: drop-shadow(0 4px 14px rgba(190, 40, 15, 0.5));
+    }
+    #overlay p { font-size: 16px; opacity: 0.85; margin-bottom: 24px; letter-spacing: 1px; }
+    #overlay button {
+      font-size: 18px;
+      padding: 12px 28px;
+      border: none;
+      border-radius: 6px;
+      background: #2e7d32;
+      color: #fff;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    #overlay button:hover { background: #43a047; }
+    #overlay.hidden { display: none; }
+
+    /* ── Main menu ─────────────────────────────────────────────── */
+    #mainMenu {
+      position: fixed;
+      inset: 0;
+      z-index: 30;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background:
+        radial-gradient(ellipse at 50% 20%, rgba(60, 55, 40, 0.5), transparent 60%),
+        linear-gradient(180deg, #14161a 0%, #0c0d0f 100%);
+      color: #e8e4d8;
+      font-family: "Courier New", Courier, monospace;
+      overflow-y: auto;
+      padding: 24px;
+    }
+    #mainMenu.hidden { display: none; }
+    /* CRT scanlines + breathing blood glow behind the menu */
+    #mainMenu::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background: repeating-linear-gradient(0deg,
+        rgba(0,0,0,0.28) 0 1px, transparent 1px 3px);
+      opacity: 0.45;
+    }
+    #mainMenu::after {
+      content: "";
+      position: absolute;
+      inset: -25%;
+      pointer-events: none;
+      background: radial-gradient(ellipse at 50% 60%,
+        rgba(140, 22, 12, 0.22), transparent 55%);
+      animation: menuBreathe 7s ease-in-out infinite;
+    }
+    @keyframes menuBreathe {
+      0%, 100% { opacity: 0.5; transform: scale(1); }
+      50%      { opacity: 1;   transform: scale(1.12); }
+    }
+    #mainMenu > * { position: relative; z-index: 1; }
+    #mainMenu h1 {
+      font-family: Impact, "Arial Black", sans-serif;
+      font-size: clamp(90px, 15vw, 170px);
+      line-height: 0.95;
+      letter-spacing: 18px;
+      padding-left: 18px; /* compensate letter-spacing on last char */
+      margin-bottom: 6px;
+      background: linear-gradient(180deg,
+        #fff6dd 0%, #e8b53a 40%, #a3230f 76%, #4d060a 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      filter: drop-shadow(0 5px 22px rgba(190, 40, 15, 0.6))
+              drop-shadow(0 2px 2px rgba(0,0,0,0.95));
+      animation: logoFlicker 6s linear infinite;
+    }
+    @keyframes logoFlicker {
+      0%, 91%, 96.5%, 100% { opacity: 1; }
+      92%, 95%  { opacity: 0.5; }
+      93.5%     { opacity: 0.85; }
+    }
+    #mainMenu .subtitle {
+      font-size: 13px;
+      letter-spacing: 6px;
+      text-transform: uppercase;
+      color: #9a927c;
+      margin-bottom: 30px;
+    }
+    #mainMenu .subtitle b { color: #c5391f; }
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .menuSection {
+      width: min(760px, 94vw);
+      margin-bottom: 22px;
+      animation: fadeUp 0.5s ease-out both;
+    }
+    .menuSection:nth-of-type(2) { animation-delay: 0.12s; }
+    .menuSection > h2 {
+      font-size: 14px;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      color: #b8ae90;
+      border-bottom: 1px solid rgba(180, 170, 140, 0.3);
+      padding-bottom: 6px;
+      margin-bottom: 12px;
+    }
+    .mapCards {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+    .mapCard {
+      border: 2px solid rgba(180, 170, 140, 0.35);
+      border-radius: 8px;
+      padding: 14px;
+      cursor: pointer;
+      background: rgba(30, 32, 28, 0.7);
+      transition: border-color 0.15s, transform 0.15s, background 0.15s;
+      text-align: center;
+    }
+    .mapCard:hover { transform: translateY(-2px); background: rgba(45, 47, 40, 0.8); }
+    .mapCard.selected {
+      border-color: #7cb342;
+      background: rgba(40, 55, 30, 0.6);
+      box-shadow: 0 0 14px rgba(124, 179, 66, 0.35);
+    }
+    .mapCard .swatch {
+      height: 64px;
+      border-radius: 5px;
+      margin-bottom: 10px;
+    }
+    .mapCard .mapName { font-weight: bold; font-size: 15px; letter-spacing: 1px; }
+    .mapCard .mapDesc { font-size: 11px; color: #9a927c; margin-top: 4px; line-height: 1.4; }
+    .attachRow {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 10px;
+      border: 1px solid rgba(180, 170, 140, 0.25);
+      border-radius: 6px;
+      margin-bottom: 6px;
+      background: rgba(30, 32, 28, 0.6);
+    }
+    .attachRow .wName {
+      width: 92px;
+      font-weight: bold;
+      font-size: 13px;
+      letter-spacing: 1px;
+    }
+    .attachBtn {
+      font-family: inherit;
+      font-size: 11px;
+      letter-spacing: 1px;
+      padding: 5px 10px;
+      border: 1px solid rgba(180, 170, 140, 0.4);
+      border-radius: 4px;
+      background: transparent;
+      color: #b8b09a;
+      cursor: pointer;
+      transition: all 0.12s;
+      text-transform: uppercase;
+    }
+    .attachBtn:hover { border-color: #d7cfae; color: #f0ead8; }
+    .attachBtn.on {
+      background: #7cb342;
+      border-color: #7cb342;
+      color: #101408;
+      font-weight: bold;
+    }
+    .attachBtn:disabled { opacity: 0.35; cursor: not-allowed; }
+    .attachHint { font-size: 10px; color: #7a745f; margin-left: auto; letter-spacing: 0.5px; }
+
+    /* ── Gunsmith screen (MW-style) ────────────────────────────── */
+    #gunsmithScreen {
+      position: fixed;
+      inset: 0;
+      z-index: 31;
+      background: radial-gradient(ellipse at 50% 45%, #0c0f16 0%, #04050a 70%);
+      font-family: "Courier New", Courier, monospace;
+      color: #e8e4d8;
+    }
+    #gunsmithScreen.hidden { display: none; }
+    #gunsmithCanvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+    #gsLines { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+    #gsWeaponName {
+      position: absolute;
+      top: 21%;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 26px;
+      font-weight: bold;
+      letter-spacing: 8px;
+      color: #f0ead8;
+      text-shadow: 0 2px 10px rgba(0,0,0,0.9);
+      text-transform: uppercase;
+      pointer-events: none;
+    }
+    #gsBackBtn {
+      position: absolute;
+      left: 20px; top: 18px;
+      font-family: inherit;
+      font-size: 13px;
+      letter-spacing: 2px;
+      padding: 8px 16px;
+      background: rgba(20, 26, 38, 0.85);
+      border: 1px solid rgba(110, 140, 180, 0.5);
+      color: #b8c6da;
+      cursor: pointer;
+      text-transform: uppercase;
+    }
+    #gsBackBtn:hover { border-color: #4fc3f7; color: #fff; }
+    #gsWeaponTabs {
+      position: absolute;
+      bottom: 2.2%;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 8px;
+    }
+    /* Loadout picker: category-grouped weapon list (CoD gunsmith style) */
+    #gsPicker {
+      position: absolute;
+      left: 14px;
+      top: 64px;
+      bottom: 70px;
+      width: 216px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding-right: 4px;
+    }
+    .gsCat {
+      font-size: 11px;
+      letter-spacing: 3px;
+      color: #4fc3f7;
+      border-bottom: 1px solid rgba(79, 195, 247, 0.35);
+      padding: 8px 2px 3px;
+      text-transform: uppercase;
+    }
+    .gsPick {
+      position: relative;
+      display: block;
+      width: 100%;
+      text-align: left;
+      font-family: inherit;
+      background: rgba(15, 20, 30, 0.85);
+      border: 1px solid rgba(110, 140, 180, 0.35);
+      color: #b8c6da;
+      padding: 7px 10px;
+      cursor: pointer;
+    }
+    .gsPick b { font-size: 13px; letter-spacing: 1px; display: block; }
+    .gsPickStats { font-size: 10px; color: #7e91ab; letter-spacing: 0.5px; }
+    .gsPickSlot {
+      position: absolute;
+      right: 8px;
+      top: 8px;
+      font-style: normal;
+      font-size: 12px;
+      color: #ffd54f;
+      border: 1px solid #ffd54f;
+      border-radius: 50%;
+      width: 20px;
+      height: 20px;
+      line-height: 18px;
+      text-align: center;
+    }
+    .gsPick:hover { border-color: #7e9cc0; color: #fff; }
+    .gsPick.active {
+      background: rgba(28, 45, 70, 0.95);
+      border-color: #4fc3f7;
+      color: #fff;
+    }
+    .gsTab {
+      font-family: inherit;
+      font-size: 12px;
+      letter-spacing: 2px;
+      padding: 8px 18px;
+      background: rgba(15, 20, 30, 0.85);
+      border: 1px solid rgba(110, 140, 180, 0.4);
+      color: #9fb0c8;
+      cursor: pointer;
+      text-transform: uppercase;
+    }
+    .gsTab:hover { color: #fff; border-color: #7e9cc0; }
+    .gsTab.active {
+      background: rgba(28, 45, 70, 0.95);
+      border-color: #4fc3f7;
+      color: #fff;
+      box-shadow: 0 0 10px rgba(79, 195, 247, 0.3);
+    }
+    .gsCard {
+      position: absolute;
+      width: 250px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .gsCard .gsTitle {
+      font-weight: bold;
+      font-size: 15px;
+      letter-spacing: 2px;
+      text-align: center;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      color: #eef2f6;
+      text-shadow: 0 1px 4px rgba(0,0,0,0.9);
+    }
+    .gsCard .gsBox {
+      position: relative;
+      border: 1px solid rgba(110, 140, 180, 0.45);
+      background: rgba(10, 16, 26, 0.88);
+      padding: 8px 12px 10px;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .gsCard .gsBox::before {
+      content: "";
+      position: absolute;
+      left: -1px; top: -1px; bottom: -1px;
+      width: 3px;
+      background: #ff6d00;
+      opacity: 0;
+    }
+    .gsCard:hover .gsBox { border-color: rgba(160, 190, 220, 0.8); }
+    .gsCard.equipped .gsBox {
+      border-color: #4fc3f7;
+      box-shadow: 0 0 14px rgba(79, 195, 247, 0.35);
+    }
+    .gsCard.equipped .gsBox::before { opacity: 1; }
+    .gsCard.disabled { opacity: 0.35; cursor: not-allowed; }
+    .gsWName { font-size: 12px; color: #9fb4d0; margin-bottom: 4px; }
+    .gsMini { display: flex; align-items: center; justify-content: space-between; }
+    .gsMini svg { width: 120px; height: 26px; fill: #c9d6e6; }
+    .gsA {
+      width: 16px; height: 16px;
+      border: 1px solid #4fc3f7;
+      color: #4fc3f7;
+      font-size: 10px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .gsStatus { font-size: 10px; letter-spacing: 1px; color: #61748c; margin-top: 4px; }
+    .gsCard.equipped .gsStatus { color: #4fc3f7; }
+    .pos-tl { top: 6%; left: 8%; }
+    .pos-tc { top: 6%; left: 50%; transform: translateX(-50%); }
+    .pos-tr { top: 6%; right: 8%; }
+    .pos-ml { top: 44%; left: 3%; }
+    .pos-mr { top: 44%; right: 3%; }
+    .pos-bl { bottom: 15%; left: 9%; }
+    .pos-bc { bottom: 15%; left: 50%; transform: translateX(-50%); }
+    .pos-br { bottom: 15%; right: 9%; }
+    #gsSkins {
+      position: absolute;
+      bottom: 7.5%;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: flex-end;
+      gap: 12px;
+    }
+    #gsSkins .gsSkinsLabel {
+      font-size: 11px;
+      letter-spacing: 3px;
+      color: #61748c;
+      align-self: center;
+    }
+    .gsSkin {
+      width: 46px;
+      cursor: pointer;
+      text-align: center;
+      opacity: 0.65;
+      transition: opacity 0.12s, transform 0.12s;
+    }
+    .gsSkin:hover { opacity: 1; transform: translateY(-2px); }
+    .gsSkin .gsSwatch {
+      width: 46px; height: 26px;
+      border: 1px solid rgba(110, 140, 180, 0.45);
+      border-radius: 3px;
+    }
+    .gsSkin .gsSkinName {
+      font-size: 9px;
+      letter-spacing: 1px;
+      color: #9fb0c8;
+      margin-top: 3px;
+      text-transform: uppercase;
+    }
+    .gsSkin.active { opacity: 1; }
+    .gsSkin.active .gsSwatch {
+      border-color: #4fc3f7;
+      box-shadow: 0 0 12px rgba(79, 195, 247, 0.5);
+    }
+    .gsSkin.active .gsSkinName { color: #4fc3f7; font-weight: bold; }
+    .attachSummary {
+      font-size: 12px;
+      color: #9a927c;
+      margin-bottom: 12px;
+      line-height: 1.6;
+    }
+    .gunsmithBtn {
+      font-family: inherit;
+      font-size: 15px;
+      letter-spacing: 3px;
+      padding: 11px 26px;
+      border: 2px solid #4fc3f7;
+      border-radius: 6px;
+      background: rgba(13, 42, 66, 0.6);
+      color: #8fd8ff;
+      cursor: pointer;
+      text-transform: uppercase;
+      transition: all 0.15s;
+    }
+    .gunsmithBtn:hover { background: #1565a0; color: #fff; }
+    #startGameBtn {
+      font-family: inherit;
+      font-size: 20px;
+      font-weight: bold;
+      letter-spacing: 3px;
+      padding: 14px 46px;
+      border: 2px solid #7cb342;
+      border-radius: 8px;
+      background: rgba(46, 125, 50, 0.25);
+      color: #cddc39;
+      cursor: pointer;
+      transition: all 0.15s;
+      text-transform: uppercase;
+      margin-top: 6px;
+      animation: fadeUp 0.5s 0.24s ease-out both, btnGlow 2.4s 1s ease-in-out infinite;
+    }
+    #startGameBtn:hover {
+      background: #2e7d32;
+      color: #fff;
+      transform: translateY(-2px) scale(1.03);
+    }
+    #startGameBtn:active { transform: translateY(0) scale(0.98); }
+    @keyframes btnGlow {
+      0%, 100% { box-shadow: 0 0 0 rgba(124, 179, 66, 0); }
+      50%      { box-shadow: 0 0 28px rgba(124, 179, 66, 0.55); }
+    }
+    .menuFooter {
+      margin-top: 18px; font-size: 11px; color: #6a6552; letter-spacing: 1px;
+      animation: fadeUp 0.5s 0.34s ease-out both;
+    }
+
+    /* ── Deployment transition (menu → game) ───────────────────── */
+    #transition {
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      background:
+        radial-gradient(ellipse at 50% 50%, rgba(70, 10, 5, 0.5), transparent 65%),
+        #030403;
+      color: #e8e4d8;
+      font-family: "Courier New", Courier, monospace;
+      cursor: pointer;
+      transition: opacity 0.55s ease-out;
+    }
+    #transition.hidden { display: none; }
+    #transition.out { opacity: 0; }
+    .trLogo {
+      font-family: Impact, "Arial Black", sans-serif;
+      font-size: clamp(64px, 10vw, 120px);
+      letter-spacing: 14px;
+      padding-left: 14px;
+      background: linear-gradient(180deg, #fff6dd 0%, #e8b53a 45%, #a3230f 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      filter: drop-shadow(0 4px 18px rgba(190, 40, 15, 0.55));
+      animation: trZoom 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
+    }
+    @keyframes trZoom {
+      from { opacity: 0; transform: scale(1.6); letter-spacing: 40px; }
+      to   { opacity: 1; transform: scale(1); letter-spacing: 14px; }
+    }
+    #trStatus {
+      font-size: 15px;
+      font-weight: bold;
+      letter-spacing: 3px;
+      color: #c5e1a5;
+      text-transform: uppercase;
+      min-height: 20px;
+    }
+    .trBar {
+      width: min(420px, 80vw);
+      height: 6px;
+      border: 1px solid rgba(180, 170, 140, 0.45);
+      border-radius: 3px;
+      overflow: hidden;
+      background: rgba(20, 24, 18, 0.8);
+    }
+    #trBarFill { width: 0; height: 100%; background: linear-gradient(90deg, #558b2f, #aed581); }
+    #trBarFill.run { animation: trFill 1.05s ease-out forwards; }
+    @keyframes trFill { from { width: 2%; } to { width: 100%; } }
+    #trHint {
+      font-size: 13px;
+      letter-spacing: 2px;
+      color: #ffd54f;
+      min-height: 18px;
+      text-transform: uppercase;
+      animation: hintPulse 1.2s ease-in-out infinite;
+    }
+    @keyframes hintPulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+  </style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="crosshair"></div>
+  <div id="hitmarker"></div>
+  <div id="damage"></div>
+  <div id="toasts"></div>
+  <div id="hud">
+    <div id="round">1</div>
+    <div id="score">Score: 0</div>
+    <div id="ammo">30 / 30</div>
+    <div id="health" style="display:none;">HP: 100</div>
+    <div id="weaponName" style="display:none;">Weapon: Pistol</div>
+    <div id="gear"></div>
+    <div id="prep"></div>
+    <div id="perks"></div>
+  </div>
+
+  <div id="scopeOverlay"></div>
+
+  <div id="mainMenu">
+    <h1>FPZ</h1>
+    <div class="subtitle">First Person <b>Zombies</b> — Seç &amp; Savaş</div>
+
+    <div class="menuSection">
+      <h2>Harita Seç</h2>
+      <div class="mapCards" id="mapCards"></div>
+    </div>
+
+    <div class="menuSection">
+      <h2>Silah Özelleştirme</h2>
+      <div class="attachSummary" id="attachSummary">Hiç aksesuar seçilmedi.</div>
+      <button class="gunsmithBtn" id="openGunsmithBtn">🔧 Gunsmith — Aksesuar Seç</button>
+      <button class="gunsmithBtn" id="statsBtn" style="background:#37474f;">📊 İstatistikler</button>
+    </div>
+
+    <div id="xpLine" style="color:#ffd54f; font-size:12px; letter-spacing:1px; margin-bottom:8px;">⭐ 0 XP — aksesuarlar XP ile açılır</div>
+
+    <button id="startGameBtn">▶ Savaşa Başla</button>
+    <div class="menuFooter">WASD hareket · Shift koş · C kay · Space zıpla · R şarjör · V süngü · G ses bombası · B kum torbası · Sağ tık nişan · 1-4 silah</div>
+  </div>
+
+  <div id="statsScreen" class="hidden">
+    <h2 style="letter-spacing:3px;">📊 İSTATİSTİKLER</h2>
+    <div id="statsBody"></div>
+    <div style="display:flex; gap:12px; margin-top:8px;">
+      <button id="statsCloseBtn">← Geri</button>
+      <button id="statsResetBtn" style="background:#5d4037;">Sıfırla</button>
+    </div>
+  </div>
+
+  <div id="gunsmithScreen" class="hidden">
+    <canvas id="gunsmithCanvas"></canvas>
+    <svg id="gsLines"></svg>
+    <div id="gsWeaponName">TABANCA</div>
+    <button id="gsBackBtn">← Geri</button>
+    <div id="gsCards"></div>
+    <div id="gsPicker"></div>
+    <div id="gsSkins"></div>
+    <div id="gsWeaponTabs"></div>
+  </div>
+
+  <div id="transition" class="hidden">
+    <div class="trLogo">FPZ</div>
+    <div id="trStatus">HARİTA YÜKLENİYOR...</div>
+    <div class="trBar"><div id="trBarFill"></div></div>
+    <div id="trHint"></div>
+  </div>
+
+  <div id="overlay">
+    <h1>FPZ</h1>
+    <p>Duraklatıldı — devam etmek için tıkla.</p>
+    <button id="startBtn">▶ Devam Et</button>
+    <button id="menuBtn" style="margin-top:14px; background:#546e7a;">Ana Menü</button>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

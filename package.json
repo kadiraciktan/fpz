@@ -1,0 +1,15 @@
+{
+  "name": "three-fps-starter",
+  "version": "1.0.0",
+  "description": "Three.js zombie FPS starter (procedural box models, pixel textures, keyframe animations)",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "check:assets": "node tools/check-assets.js",
+    "studio": "python3 -m http.server 8080"
+  },
+  "devDependencies": {
+    "three": "0.160.0"
+  }
+}
