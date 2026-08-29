@@ -15,6 +15,7 @@ import {
 } from './defs.js';
 import { initialReserve, reloadTransfer, AMMO_CRATE_FACTOR } from './ammo.js';
 import { papStats, papLabel, GRENADE_FUSE } from '../game/zombies.js';
+import { SPECIAL_AMMO, addSpecial, consumeSpecial, specialActive, specialIcon } from '../game/ammoTypes.js';
 import {
   ATTACH_ANCHORS,
   attachmentAvailable,
@@ -26,6 +27,7 @@ import {
 import {
   applyViewmodelSettings,
   applySkin,
+  applyWonderGlow,
   createGunMesh,
   createHandsMesh,
   createLegsMesh,
@@ -161,6 +163,10 @@ export class WeaponManager {
     this.grenadesReady = 1;
     this._grenades = [];
 
+    // Power-up special ammo riding on the NORMAL guns (ammoTypes.js):
+    // { key: 'dragon'|'shock'|'frag', rounds }. Wonder weapons never use it.
+    this.special = null;
+
     // Zombie-drink perks (main.js sets keys true when a machine is bought):
     //  speedCola — 40% faster reload · doubleTap — x2 bullet damage
     //  quickRevive — consumed by main.js on death
@@ -225,6 +231,9 @@ export class WeaponManager {
     if (this.papHeld.has(def.name)) Object.assign(effDef, papStats(effDef), { label: papLabel(effDef) });
     const mesh = createGunMesh(effDef);
     applySkin(mesh, skin);
+    // Wonder weapon: paint the energy core + emitter rings green (after the
+    // skin clone so the shared cached material is never mutated).
+    if (effDef.wonder) applyWonderGlow(mesh);
     // Attach attachment meshes (scope / suppressor / grip / mag / stock).
     const attMeshes = buildAttachmentMeshes(effDef, att, mesh);
     mesh.add(attMeshes);
@@ -364,6 +373,24 @@ export class WeaponManager {
     this._updateHUD();
   }
 
+  /** 2x-CEP power-up: every gun's reserve doubles (up to 8 magazines). */
+  doubleReserve() {
+    for (const w of this.weapons) {
+      w.reserve = Math.min(initialReserve(w.def.magazineSize) * 2, w.reserve * 2);
+    }
+    this._updateHUD();
+  }
+
+  /**
+   * Pick up a special-ammo power-up (ammoTypes.js). Same type stacks its
+   * rounds, a different type replaces the bag. Returns the def or null.
+   */
+  grantSpecial(key) {
+    this.special = addSpecial(this.special, key);
+    this._updateHUD();
+    return SPECIAL_AMMO[key] || null;
+  }
+
   get active() {
     return this.weapons[this.activeIndex];
   }
@@ -485,7 +512,7 @@ export class WeaponManager {
     this._decalMat.dispose();
     this._decalGeo.dispose();
     // Shared effect materials/geometries live for the manager's lifetime.
-    for (const mat of [this._tracerMat, this._sparkMat, this._flashCoreMat, this._flashStreakMat, this._flashGlowMat]) {
+    for (const mat of [this._tracerMat, this._tracerMatGreen, this._sparkMat, this._flashCoreMat, this._flashStreakMat, this._flashGlowMat]) {
       if (mat) mat.dispose();
     }
     for (const geo of [this._tracerGeo, this._sparkGeo, this._flashCoreGeo, this._flashStreakGeo, this._flashGlowGeo, this._bloodGeo]) {
@@ -673,6 +700,7 @@ export class WeaponManager {
   _tryShoot() {
     const w = this.active;
     if (w.reloading || w.fireCooldown > 0 || this.swapping) return;
+    this._hitEnemy = null;
     if (w.ammo <= 0) {
       this.reload();
       return;
@@ -681,8 +709,13 @@ export class WeaponManager {
     w.ammo--;
     w.fireCooldown = w.def.fireRate;
     this.controller.addRecoil(w.def.name);
-    if (w.att.suppressor) this.sfx.shootSuppressed(w.def.name);
+    // Power-up ammo rides on normal guns only (the Ray Gun is its own show).
+    const kind = !w.def.wonder && specialActive(this.special) ? this.special.key : null;
+    if (w.def.wonder) this.sfx.rayShot();
+    else if (w.att.suppressor) this.sfx.shootSuppressed(w.def.name);
     else this.sfx.shoot(w.def.name);
+    if (kind === 'dragon') this.sfx.flame();
+    else if (kind === 'shock') this.sfx.zap(0.3);
 
     // Play fire animation on gun parts
     const animator = this._currentGun?.userData.animator;
@@ -716,12 +749,25 @@ export class WeaponManager {
       endPoint = this.raycaster.ray.at(w.def.range, this._rayEnd);
     }
 
-    this._spawnTracer(muzzle, endPoint);
+    this._spawnTracer(muzzle, endPoint, w.def.wonder ? 'green' : null);
     if (onEnemy === null) this._spawnImpact(endPoint);
     // Suppressed weapons have no muzzle flash — and no dynamic light.
     if (!w.att.suppressor) {
       this._spawnMuzzleFlash(muzzle);
       this._spawnMuzzleLight(muzzle);
+    }
+    // Special round fired: spend the bag and let the world react (burn /
+    // stun+chain / mini blast) via the onSpecialShot callback.
+    if (kind) {
+      this.special = consumeSpecial(this.special);
+      if (this.callbacks.onSpecialShot) {
+        this.callbacks.onSpecialShot(kind, this._hitEnemy || null, endPoint);
+      }
+      if (!this.special && this.callbacks.onSpecialEnd) this.callbacks.onSpecialEnd();
+    }
+    // Wonder weapon: every connect detonates a small green splash.
+    if (w.def.splash && hits.length > 0 && this.callbacks.onSplash) {
+      this.callbacks.onSplash(endPoint, w.def.splash.radius, w.def.splash.damage);
     }
     this._updateHUD();
   }
@@ -745,6 +791,7 @@ export class WeaponManager {
     }
     if (!target || !target.userData.isEnemy) return null;
     const enemy = target.userData.enemyRef;
+    this._hitEnemy = enemy; // consumed by the special-shot pass in _tryShoot
     const isHeadshot = object.userData.isHead === true;
     // Blood burst + knockback so hits feel physical.
     this._spawnBlood(point);
@@ -752,7 +799,7 @@ export class WeaponManager {
       enemy.knockback(this.raycaster.ray.direction, isHeadshot ? 0.35 : 0.18);
     }
     if (this.callbacks.onEnemyHit) this.callbacks.onEnemyHit(enemy, isHeadshot);
-    const died = enemy.takeDamage(damage);
+    const died = enemy.takeDamage(damage, this.raycaster.ray.direction);
     if (died && this.callbacks.onEnemyKilled) {
       this.callbacks.onEnemyKilled(enemy, isHeadshot);
     }
@@ -1036,9 +1083,14 @@ export class WeaponManager {
     }
   }
 
-  _spawnTracer(from, to) {
-    const mat = this._tracerMat || (this._tracerMat = new THREE.MeshBasicMaterial({ color: 0xffe082, transparent: true, opacity: 0.9 }));
-    let tracer = this._tracerPool.pop();
+  _spawnTracer(from, to, tint = null) {
+    // Green pool for the Ray Gun — separate material, still zero alloc.
+    const green = tint === 'green';
+    const mat = green
+      ? (this._tracerMatGreen || (this._tracerMatGreen = new THREE.MeshBasicMaterial({ color: 0x6bff70, transparent: true, opacity: 0.95 })))
+      : (this._tracerMat || (this._tracerMat = new THREE.MeshBasicMaterial({ color: 0xffe082, transparent: true, opacity: 0.9 })));
+    const pool = green ? (this._tracerPoolGreen || (this._tracerPoolGreen = [])) : this._tracerPool;
+    let tracer = pool.pop();
     if (!tracer) {
       tracer = new THREE.Mesh(this._tracerGeo || (this._tracerGeo = new THREE.BoxGeometry(0.02, 0.02, 0.6)), mat);
     }
@@ -1048,10 +1100,11 @@ export class WeaponManager {
     tracer.lookAt(to);
     tracer.rotateX(Math.PI / 2);
     tracer.scale.z = len / 0.6;
+    if (green) tracer.scale.x = tracer.scale.y = 1.8; // fatter plasma bolt
     tracer.material.opacity = 0.9;
     tracer.visible = true;
     this.scene.add(tracer);
-    this.effects.push({ obj: tracer, t: 0, dur: 0.08, fade: true, onDone: () => { this.scene.remove(tracer); tracer.material.opacity = 0.9; tracer.visible = false; this._tracerPool.push(tracer); } });
+    this.effects.push({ obj: tracer, t: 0, dur: 0.08, fade: true, onDone: () => { this.scene.remove(tracer); tracer.material.opacity = 0.9; tracer.visible = false; tracer.scale.set(1, 1, tracer.scale.z); pool.push(tracer); } });
   }
 
   _spawnImpact(point) {
@@ -1141,9 +1194,10 @@ export class WeaponManager {
   _updateHUD() {
     const w = this.active;
     if (this._ammoEl) {
+      const badge = specialActive(this.special) ? ` ${specialIcon(this.special)}` : '';
       this._ammoEl.textContent = w.reloading
-        ? 'RELOADING...'
-        : `${w.ammo} ▸ ${w.reserve}`;
+        ? `RELOADING...${badge}`
+        : `${w.ammo} ▸ ${w.reserve}${badge}`;
     }
     if (this._weaponEl) {
       this._weaponEl.textContent = w.def.label || w.def.name;

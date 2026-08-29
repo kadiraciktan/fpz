@@ -23,6 +23,8 @@ const BUILDERS = {
   nacht: buildNacht,
 };
 
+const META_BY_ID = Object.fromEntries(MAPS.map((m) => [m.id, m]));
+
 /**
  * Build a playable arena. Extra zones are sealed by point-buyable barriers
  * (CoD zombies style); paying one unlocks that zone for walking and spawns.
@@ -133,5 +135,5 @@ export function createScene(mapId = 'street') {
     else if (o.isDirectionalLight && !lights.sun) lights.sun = o;
   });
 
-  return { scene, obstacles, targets, arenaHalf: ctx.arenaHalf, lights, zones, barriers, windows, pointLights };
+  return { scene, obstacles, targets, arenaHalf: ctx.arenaHalf, lights, zones, barriers, windows, pointLights, meta: META_BY_ID[mapId] || null };
 }

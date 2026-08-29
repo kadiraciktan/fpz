@@ -18,6 +18,7 @@ const MODEL_TEX_SIZE = {
   mp5: 32,
   cal50: 32,
   lsw: 32,
+  raygun: 32,
   zombie: 16,
   headcrab: 16,
   streetlamp: 16,

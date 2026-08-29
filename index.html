@@ -637,6 +637,43 @@
     }
     /* Keep the wave countdown clear of the buff strip */
     #prep { top: 84px !important; }
+    /* Bleed-out bar (downed / last stand) — big red timer at the bottom */
+    #downWrap {
+      position: absolute;
+      bottom: 92px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: min(460px, 70vw);
+      text-align: center;
+      z-index: 11;
+      transition: opacity 0.25s;
+    }
+    #downWrap.hidden { display: none; }
+    #downLabel {
+      display: block;
+      font-size: 15px;
+      font-weight: 800;
+      letter-spacing: 2px;
+      color: #ff5252;
+      text-shadow: 0 1px 4px #000, 0 0 14px rgba(255, 0, 0, 0.7);
+      animation: downpulse 0.9s ease-in-out infinite;
+    }
+    @keyframes downpulse { 50% { opacity: 0.55; } }
+    #downBarOuter {
+      margin-top: 6px;
+      height: 16px;
+      border-radius: 8px;
+      border: 2px solid rgba(255, 90, 90, 0.85);
+      background: rgba(0, 0, 0, 0.55);
+      overflow: hidden;
+      box-shadow: 0 0 14px rgba(180, 0, 0, 0.6);
+    }
+    #downBar {
+      height: 100%;
+      width: 100%;
+      background: linear-gradient(90deg, #7a0f0f, #ff2d2d);
+      transition: width 0.1s linear;
+    }
     .attachRow {
       display: flex;
       align-items: center;
@@ -1212,6 +1249,10 @@
     <div id="prep"></div>
     <div id="perks"></div>
     <div id="buffs"></div>
+    <div id="downWrap" class="hidden">
+      <span id="downLabel">🩸 YERE DÜŞTÜN — ÖLDÜR YA DA KANAMA</span>
+      <div id="downBarOuter"><div id="downBar"></div></div>
+    </div>
     <canvas id="compass" width="420" height="40"></canvas>
   </div>
 

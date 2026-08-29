@@ -43,6 +43,10 @@ export class FPSController {
       // A short C tap while moving still triggers the slide first.
       crouchDrop: 0.62,
       crouchSpeedMul: 0.45,
+      // Downed (last stand): the view drops to the floor and the player
+      // crawls at a crawl. main.js flips `downed` and runs the bleed timer.
+      downedEye: 0.55,
+      downedSpeedMul: 0.32,
       ...options,
     };
 
@@ -73,6 +77,10 @@ export class FPSController {
     this.padSprint = false;
     this.padCrouch = false;
     this.crouching = false;
+
+    // Downed / last-stand: when true, the camera sinks to downedEye height,
+    // movement is crippled and jump/slide are disabled. Driven by main.js.
+    this.downed = false;
 
     // Gun bobbing
     this._gunBobTime = 0;
@@ -269,17 +277,18 @@ export class FPSController {
 
     // --- Crouch: hold C on the ground (a C tap while moving = slide first).
     // Deliberately NOT Ctrl — Ctrl+W would close the tab mid-crouch. ---
-    const crouchHeld = this.keys['KeyC'] || this.padCrouch;
+    const crouchHeld = !this.downed && (this.keys['KeyC'] || this.padCrouch);
     this.crouching = !!crouchHeld && this.onGround && this._slideTime <= 0;
 
     const sprinting =
-      !this.crouching && (this.keys['ShiftLeft'] || this.keys['ShiftRight'] || this.padSprint);
+      !this.downed && !this.crouching && (this.keys['ShiftLeft'] || this.keys['ShiftRight'] || this.padSprint);
     let speed = sprinting ? this.params.sprintSpeed : this.params.speed;
     if (this.crouching) speed *= this.params.crouchSpeedMul;
+    if (this.downed) speed *= this.params.downedSpeedMul;
 
     // --- Slide: press C on the ground while moving to kick into a slide ---
     const horizSpeed = Math.hypot(this.velocity.x, this.velocity.z);
-    const cHeld = !!this.keys['KeyC'];
+    const cHeld = !this.downed && !!this.keys['KeyC'];
     if (
       cHeld && !this._slideKeyLatch &&
       this.onGround && this._slideTime <= 0 &&
@@ -319,7 +328,7 @@ export class FPSController {
     this.velocity.y -= this.params.gravity * dt;
 
     // --- Jump ---
-    if ((this.keys['Space'] || this.padJump) && this.onGround && !sliding) {
+    if ((this.keys['Space'] || this.padJump) && this.onGround && !sliding && !this.downed) {
       this.velocity.y = this.params.jumpForce;
       this.onGround = false;
     }
@@ -332,8 +341,9 @@ export class FPSController {
     // --- Collision ---
     this._resolveCollisions();
 
-    // --- Ground check ---
-    const groundY = this.params.eyeHeight;
+    // --- Ground check (eye height drops to the floor while downed) ---
+    const eye = this.downed ? this.params.downedEye : this.params.eyeHeight;
+    const groundY = eye;
     if (this.position.y <= groundY) {
       this.position.y = groundY;
       this.velocity.y = 0;
@@ -344,14 +354,16 @@ export class FPSController {
     this.camera.position.copy(this.position);
 
     // --- Slide / crouch dip: lower the camera, then stand back up ---
-    const dropped = sliding || this.crouching;
-    const dropTarget = sliding ? this.params.slideDrop : this.crouching ? this.params.crouchDrop : 0;
+    const dropped = !this.downed && (sliding || this.crouching);
+    const dropTarget = this.downed
+      ? 0
+      : sliding ? this.params.slideDrop : this.crouching ? this.params.crouchDrop : 0;
     this._slideDrop = THREE.MathUtils.lerp(this._slideDrop, dropTarget, Math.min(1, dt * (sliding ? 14 : 9)));
     this.camera.position.y -= this._slideDrop;
 
     // --- Legs follow the body in world space (yaw-aligned, feet on ground) ---
     if (this.legs) {
-      const feetY = this.position.y - this.params.eyeHeight;
+      const feetY = this.position.y - eye;
       this.legs.position.set(this.position.x, feetY + this._legHipH - this._slideDrop * 0.6, this.position.z);
       this.legs.rotation.y = this._yaw;
     }

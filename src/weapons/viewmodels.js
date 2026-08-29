@@ -61,6 +61,22 @@ export function applySkin(group, skinId) {
 }
 
 /**
+ * Wonder-weapon look: the energy core / emitter rings / muzzle glow green.
+ * Must run AFTER applySkin() (which already cloned the cached materials).
+ */
+export function applyWonderGlow(group) {
+  group.traverse((o) => {
+    if (!o.isMesh || !o.material) return;
+    const part = o.userData.partName;
+    if (!/^(core|ring\d|muzzle)/.test(part || '')) return;
+    o.material = o.material.clone();
+    o.material.emissive = new THREE.Color(0x2fff5a);
+    o.material.emissiveIntensity = 0.9;
+    o.material.needsUpdate = true;
+  });
+}
+
+/**
  * Create the gun viewmodel for a weapon def.
  * @param {object} def
  * @returns {THREE.Group}

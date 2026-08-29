@@ -23,6 +23,7 @@ export const meta = {
   name: 'Savaş Sokakları',
   desc: 'İki katlı yıkık cepheler, yanmış araçlar, telefon direkleri. Kuzey ve güney barikatlarını aç, sokağı genişlet.',
   swatch: 'linear-gradient(160deg, #8a8578 0%, #6e5a4a 55%, #4a463c 100%)',
+  outdoor: true, // weather + full day/night cycle run here
 };
 
 // ── MAP 1: war-torn street ────────────────────────────────────────────

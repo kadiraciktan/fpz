@@ -18,6 +18,7 @@ export const meta = {
   name: 'Terk Edilmiş Fabrika',
   desc: 'Silolar, vinçler, makine bahçeleri. Doğu ve batı hangar kapıları puanla açılır.',
   swatch: 'linear-gradient(160deg, #5d4037 0%, #37474f 55%, #263238 100%)',
+  outdoor: true, // weather + full day/night cycle run here
 };
 
 export function build(ctx) {

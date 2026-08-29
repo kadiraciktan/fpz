@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { buildModel } from '../gfx/ModelLoader.js';
 import { Animator } from '../anims/Animation.js';
 import { BARRIER_CHEW_RATE } from './zombies.js';
+import { SPECIAL_AMMO } from './ammoTypes.js';
 import { insertHash, resetHash, queryHash, cellKey } from './spatial.js';
 import { circleHitsOBB, resolveCircleOBB } from './collision.js';
 import { zombieModel } from '../../models/zombie.js';
@@ -217,6 +218,22 @@ export class Enemy {
     this._kb = new THREE.Vector3();
     this._flash = 0;
 
+    // Special-ammo states (ammoTypes.js): burn DoT ticks and shock stun.
+    // Timers only — main.js runs the damage tick so kills credit properly.
+    this.burnT = 0;
+    this.burnAcc = 0;
+    this.burnDamage = 0;
+    this.stunT = 0;
+
+    // Boss attack state (dash windup → lunge, periodic summons)
+    this._dashCd = 3.5 + Math.random() * 3;
+    this._dashWind = 0;
+    this._dashT = 0;
+    this._dashDir = new THREE.Vector3();
+    this._sumCd = 9 + Math.random() * 5;
+    this._onSummon = options.onSummon || null;
+    this._onBossRoar = options.onBossRoar || null;
+
     // Static references shared with the game loop
     this._obstacles = options.obstacles || null;
     this._sandbags = options.sandbags || null;
@@ -325,6 +342,72 @@ export class Enemy {
     this._lureTimer = duration;
   }
 
+  /** Dragon's Breath: keep burning for `seconds` (overwrites with the max). */
+  ignite(seconds) {
+    if (!this.alive || this.dying) return;
+    this.burnT = Math.max(this.burnT, seconds);
+  }
+
+  /** Shock round: freeze the zombie in place for `seconds`. */
+  stun(seconds) {
+    if (!this.alive || this.dying) return;
+    this.stunT = Math.max(this.stunT, seconds);
+  }
+
+  /**
+   * Boss summon: every ~12-18 s while the player is within reach, roar and
+   * call in reinforcements (main.js owns the spawn; we just knock).
+   */
+  _bossSummon(dt, playerDistSq) {
+    if (!this._onSummon) return;
+    this._sumCd -= dt;
+    if (this._sumCd > 0) return;
+    const d = Math.sqrt(playerDistSq);
+    if (d > 6 && d < 34) {
+      this._onSummon(this.group.position);
+      if (this._onBossRoar) this._onBossRoar();
+      this._sumCd = 12 + Math.random() * 6;
+    } else {
+      this._sumCd = 2; // out of range: ask again soon
+    }
+  }
+
+  /** Arm the dash when the chase passes mid-range (wind-up next ticks). */
+  _bossTryDash(dt, dir, playerDistSq) {
+    this._dashCd -= dt;
+    if (this._dashCd <= 0 && playerDistSq > 20 && playerDistSq < 324) {
+      this._dashWind = 0.3;
+      this._dashDir.copy(dir);
+      if (this._onBossRoar) this._onBossRoar();
+    }
+  }
+
+  /** Wind-up (0.3 s red flash) → 0.75 s lunge at 3.6× speed, straight line. */
+  _bossDashStep(dt) {
+    if (this._dashWind > 0) {
+      this._dashWind -= dt;
+      if (this._dashWind <= 0) {
+        this._dashT = 0.75;
+        this._dashCd = 6 + Math.random() * 5;
+      }
+      this.group.rotation.y = Math.atan2(this._dashDir.x, this._dashDir.z);
+      this.animator.update(dt);
+      return;
+    }
+    this._dashT -= dt;
+    const p = this.group.position;
+    p.addScaledVector(this._dashDir, this.params.speed * 3.6 * dt);
+    this._collideObstacles();
+    this._separate();
+    this._collideObstacles();
+    this.group.rotation.y = Math.atan2(this._dashDir.x, this._dashDir.z);
+    if (this._currentAnim !== 'walk') {
+      this.animator.play('walk');
+      this._currentAnim = 'walk';
+    }
+    this.animator.update(dt * 2.5); // frantic sprint during the lunge
+  }
+
   /**
    * @param {number} dt
    * @param {THREE.Vector3} playerPos
@@ -337,15 +420,31 @@ export class Enemy {
     const playerDistSq = pdx * pdx + pdz * pdz;
 
     // Hit-flash decay (white-hot tint that fades over ~0.12 s)
+    this._emissiveLit = false;
     if (this._flash > 0) {
       this._flash = Math.max(0, this._flash - dt * 8);
       const e = this._flash;
       for (const m of this._meshes) m.material.emissive.setRGB(e, e * 0.35, e * 0.35);
+      this._emissiveLit = true;
+    } else if ((this.burnT > 0 || this._dashWind > 0) && this.alive && !this.dying && playerDistSq < LOD_ANIM_SQ) {
+      // Dragon's Breath burn (and the boss dash wind-up): hot orange flicker.
+      const pulse = 0.5 + 0.3 * Math.sin(performance.now() * 0.02);
+      for (const m of this._meshes) m.material.emissive.setRGB(pulse, pulse * 0.35, 0);
+      this._emissiveLit = true;
+    } else if (this.stunT > 0 && this.alive && !this.dying && playerDistSq < LOD_ANIM_SQ) {
+      // Shock round stun: cold cyan hum.
+      for (const m of this._meshes) m.material.emissive.setRGB(0, 0.4, 0.45);
+      this._emissiveLit = true;
     } else if (this.params.explosive && this.alive && !this.dying && playerDistSq < LOD_ANIM_SQ) {
       // Bomber: ominous orange pulse (skip when far — material writes are dear).
       const pulse = 0.35 + 0.25 * Math.sin(performance.now() * 0.012);
       for (const m of this._meshes) m.material.emissive.setRGB(pulse, pulse * 0.35, 0);
+      this._emissiveLit = true;
+    } else if (this._wasLit) {
+      // State ended: one cheap pass to wipe the glow off the recycled skin.
+      for (const m of this._meshes) m.material.emissive.setRGB(0, 0, 0);
     }
+    this._wasLit = this._emissiveLit;
 
     // Knockback impulse decay
     if (this._kb.lengthSq() > 1e-4) {
@@ -377,6 +476,38 @@ export class Enemy {
 
     if (!this.alive) return 0;
 
+    // Shock stun: neutralized — no chase, no bite, no bomber trigger.
+    if (this.stunT > 0) {
+      this.stunT -= dt;
+      if (this._currentAnim !== 'idle') {
+        this.animator.play('idle');
+        this._currentAnim = 'idle';
+      }
+      if (playerDistSq < LOD_ANIM_SQ) this.animator.update(dt);
+      return 0;
+    }
+
+    // Dragon's Breath burn: accumulate DoT; main.js consumes `burnDamage`
+    // so burn kills score points and drop loot like any other kill.
+    if (this.burnT > 0) {
+      this.burnT -= dt;
+      this.burnAcc += dt * SPECIAL_AMMO.dragon.burnDps;
+      if (this.burnAcc >= 1) {
+        this.burnDamage += Math.floor(this.burnAcc);
+        this.burnAcc -= Math.floor(this.burnAcc);
+      }
+      if (this.burnT <= 0) this.burnAcc = 0;
+    }
+
+    // Boss: periodic reinforcements while it walks the field.
+    if (this.type === 'boss') this._bossSummon(dt, playerDistSq);
+
+    // Boss dash: wind-up then a straight lunge (overrides normal AI).
+    if (this.type === 'boss' && (this._dashWind > 0 || this._dashT > 0)) {
+      this._bossDashStep(dt);
+      return 0;
+    }
+
     const dir = this._dir || (this._dir = new THREE.Vector3());
 
     // Bomber: proximity detonation — big damage, main loop handles the FX.
@@ -406,6 +537,7 @@ export class Enemy {
 
     if (target === playerPos && dist > this.params.attackRange) {
       dir.normalize();
+      if (this.type === 'boss') this._bossTryDash(dt, dir, playerDistSq);
       // Windowed maps: detour to the best window when walls block the
       // straight chase (and press into it to chew the planks off).
       const moveDir = (this._windows && this._windows.length)
@@ -813,8 +945,13 @@ export class Enemy {
     const dmg = Math.max(0, Math.round(maxDamage * (1 - d / radius)));
     if (dmg <= 0) return false;
     const push = new THREE.Vector3().subVectors(this.group.position, center).setY(0);
-    if (push.lengthSq() > 1e-5) this.knockback(push.normalize(), 0.6);
-    return this.takeDamage(dmg);
+    let blastDir = null;
+    if (push.lengthSq() > 1e-5) {
+      push.normalize();
+      blastDir = push;
+      this.knockback(push, 0.6);
+    }
+    return this.takeDamage(dmg, blastDir);
   }
 
   /**
@@ -830,24 +967,40 @@ export class Enemy {
   }
 
   /**
-   * Apply damage. Returns true if enemy died.
+   * Apply damage. Returns true if enemy died. `deathDir` (optional,
+   * normalized travel direction of the killing shot/blast) topples the
+   * corpse along the round — a cheap ragdoll nudge.
    */
-  takeDamage(amount) {
+  takeDamage(amount, deathDir = null) {
     if (!this.alive || this.dying) return false;
     this.health -= amount;
     if (this.health <= 0) {
       this.alive = false;
-      this.startDeath();
+      this.startDeath(deathDir);
       return true;
     }
     return false;
   }
 
-  /** Play the one-shot death animation (idempotent). */
-  startDeath() {
+  /**
+   * Play the one-shot death animation (idempotent). With a direction the
+   * zombie spins to face along the bullet and tips over with a random
+   * tumble — pooled groups snap back to rest in _resetPooled().
+   */
+  startDeath(dir = null) {
     if (this.dying) return;
     this.alive = false;
     this.dying = true;
+    this.burnT = 0;
+    this.stunT = 0;
+    if (dir && (dir.x || dir.z)) {
+      // The death clip pitches forward over local +Z, so facing along the
+      // bullet direction makes the body fall AWAY from the shot.
+      this.group.rotation.y = Math.atan2(dir.x, dir.z);
+      this.group.rotation.z = (Math.random() - 0.5) * 0.35;
+      this._kb.x += dir.x * 1.1;
+      this._kb.z += dir.z * 1.1;
+    }
     // Re-snapshot root so the death clip's pos/rot deltas start from the
     // zombie's current position & facing, not the original spawn point.
     this.animator.captureRest('root');

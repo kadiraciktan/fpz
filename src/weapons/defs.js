@@ -6,6 +6,7 @@ import { m4a1Model } from '../../models/m4a1.js';
 import { mp5Model } from '../../models/mp5.js';
 import { cal50Model } from '../../models/cal50.js';
 import { lswModel } from '../../models/lsw.js';
+import { raygunModel } from '../../models/raygun.js';
 
 /**
  * weapons/defs.js
@@ -102,6 +103,22 @@ export const WEAPON_DEFS = [
     range: 75,
     color: 0x55585c,
   },
+  {
+    // Wonder weapon: only ever granted by the mystery box. `wonder` keeps
+    // it out of the gunsmith/loadout/wall-gun pools; `splash` makes every
+    // hit detonate a small green blast at the impact point.
+    name: 'RayGun',
+    label: 'RAY GUN',
+    category: 'WONDER',
+    magazineSize: 20,
+    fireRate: 0.45,
+    reloadTime: 2.6,
+    damage: 4,
+    range: 70,
+    color: 0x2e7d32,
+    wonder: true,
+    splash: { radius: 2.6, damage: 3 },
+  },
 ];
 
 /** Display name per weapon id (Gunsmith + HUD). */
@@ -133,6 +150,7 @@ export const MYSTERY_POOL = [
   { name: 'Shotgun', weight: 11, rarity: 'IYI' },
   { name: 'LSW', weight: 8, rarity: 'NADIR' },
   { name: 'Cal50', weight: 6, rarity: 'EFSANE' },
+  { name: 'RayGun', weight: 3, rarity: 'WONDER' },
 ];
 
 export const MODEL_BY_NAME = {
@@ -144,6 +162,7 @@ export const MODEL_BY_NAME = {
   MP5: mp5Model,
   Cal50: cal50Model,
   LSW: lswModel,
+  RayGun: raygunModel,
 };
 
 // Weapon-specific hand reload clips (see models/hands.js). Each weapon kind

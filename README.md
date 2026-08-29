@@ -29,6 +29,7 @@ python3 -m http.server 8080
 │   ├── gfx/
 │   │   ├── Scene.js        #   Re-exports createScene / MAPS from src/maps/
 │   │   ├── ModelLoader.js  #   buildModel() + buildTexture() pipeline
+│   │   ├── BloodDecals.js  #   Pooled ground-blood splats (ring buffer)
 │   │   └── Prefabs.js      #   Reusable scene objects (lamps, crates, barriers)
 │   ├── sfx/
 │   │   └── Sound.js        #   Web Audio procedural SFX + tension music
@@ -53,7 +54,9 @@ python3 -m http.server 8080
 │   ├── game/
 │   │   ├── Enemy.js        #   Zombie AI: walk/attack/death + Animator
 │   │   ├── waves.js        #   Pure wave scaling + special round formulas
-│   │   └── zombies.js      #   Difficulty, Pack-a-Punch, grenade & barrier math
+│   │   ├── zombies.js      #   Difficulty, Pack-a-Punch, grenade & barrier math
+│   │   ├── ammoTypes.js    #   Pure special-ammo formulas (burn, shock chain)
+│   │   └── weather.js      #   Weather state machine + one-draw-call rain
 │   └── ui/
 │       └── gunsmith.js     #   Gunsmith screen (preview renderer, cards)
 ├── models/
@@ -65,6 +68,7 @@ python3 -m http.server 8080
 │   ├── mp5.js              # MP5K SMG (CoD-style) — 10 parts
 │   ├── cal50.js            # .50 CAL rifle (CoD-style) — 11 parts, bipod
 │   ├── lsw.js              # LSW LMG (CoD-style) — 11 parts, box mag
+│   ├── raygun.js           # RAY GUN wonder weapon — 10 parts, glow rings
 │   ├── zombie.js           # 4 parts (legs, body, head, arms) + 4 anims
 │   ├── headcrab.js         # 6 parts (shell, head, legs, claws) + 5 anims
 │   ├── hands.js            # First-person hands viewmodel + reload clips
@@ -85,6 +89,10 @@ python3 -m http.server 8080
 │   ├── animation.test.js     # Animator interpolation, loops, onEnd
 │   ├── waves.test.js         # Wave scaling + special round formulas
 │   ├── ammo.test.js          # Ammo economy + weighted loot picks
+│   ├── ammo_types.test.js    # Special ammo: stacking, burn tick, zap chain
+│   ├── downed.test.js        # Bleed-out bar, kill bonus, carpet constants
+│   ├── enemy.test.js         # Burn DoT, stun freeze, boss dash/summon, topple
+│   ├── weather.test.js       # Weather rolls + rain column buffer reuse
 │   └── zombies.test.js       # Difficulty, PaP, grenades, barrier, machine spots
 ├── tools/
 │   └── check-assets.js     # CLI validator for all assets
@@ -257,6 +265,7 @@ the circuit back through spawn.
 | MP5K | Makineli Tabanca | 30 | 0.075s | 1 | 45m | 1.7s |
 | .50 CAL | Keskin Nişancı | 5 | 1.50s | 6 | 180m | 3.2s |
 | LSW | Makineli Tüfek | 50 | 0.13s | 1 | 75m | 3.4s |
+| RAY GUN | WONDER (sadece kutu) | 20 | 0.45s | 4 | 70m | 2.6s |
 
 Attachments unlock with lifetime XP (kills/headshots/waves); optics share one
 mount slot; the .50 CAL and M4A1 take the sniper tube scope.
@@ -274,18 +283,77 @@ wait for a drop:
 ## Special Rounds
 
 - **Boss round** — every 5th round from round 5 (two from round 15): huge red
-  elites (x10 HP, x2 damage, 500 pts, MAX drop)
+  elites (x10 HP, x2 damage, 500 pts, MAX drop). Bosses ATTACK: they wind up a
+  red flash then **lunge at 3.6× speed** every ~6-11 s, and every ~12-18 s they
+  roar and **summon 2 sprinters** at their feet (hard cap: 6 live summoners).
 - **Sprint round** — every 7th round: the horde is 100% sprinters
 - **Headcrab incursion** — every 4th round from round 4: a pack of hopping
   headcrabs (Half-Life-style) mixes into the wave — fast, low HP, they pounce
   at your feet in short leaps
 - Wave formulas live in `src/game/waves.js` (unit-tested)
 
+## Power-Ups (kill drops ~25%)
+
+Beyond the classic CEP / MAX / Insta-Kill / Double Points / Nuke / MedKit:
+
+- **CARPET** — carpet bombing: 12 bombs walk in around you over ~2 s
+- **x2CEP** — every gun's reserve doubles (up to 8 magazines)
+- **EJDER / ŞOK / PATLAR** — special ammo, see below
+
+## Special Ammo (power-up drops)
+
+Drops ride on your NORMAL guns; the HUD ammo line shows the badge (🔥10 …)
+and every shot consumes one special round. Pure math in
+`src/game/ammoTypes.js` (unit-tested):
+
+- **🔥 EJDER NEFESİ** (10 rounds) — ignites the hit zombie: 4 s of burn DoT;
+  burn kills score points like any other kill
+- **⚡ ŞOK MERMİ** (12 rounds) — stuns the target ~1.3 s (frozen mid-step,
+  cyan glow) and arcs a zap chain to the 3 nearest zombies within 4 m
+- **💥 PATLAYICI MERMİ** (6 rounds) — mini grenade blast at the impact point
+  (3 m / 4 dmg, same falloff + knockback rules as frags)
+
+## Downed / Last Stand
+
+A lethal hit no longer ends the run instantly (Quick Revive still fully
+revives you first). Instead you **go down**: the camera drops to the floor,
+you crawl at 32% speed and keep shooting while a red **bleed-out bar** drains
+(~12 s). Zombie bites chew the bar faster; **every kill buys back +1.5 s**
+— hold out until the wave dies and you stand back up with 40 HP. Formulas in
+`src/game/zombies.js` (unit-tested).
+
 ## Mystery Box (CoD-style loot table)
 
-950 pts — all 8 guns roll, weighted by rarity (YAYGIN → IYI → NADIR → EFSANE).
-The gun replaces your active slot; a duplicate instead refills your ammo.
-Pay again on the same box to reroll.
+950 pts — 8 guns roll, weighted by rarity (YAYGIN → IYI → NADIR → EFSANE),
+plus the **WONDER** Ray Gun (weight 3, see below). The gun replaces your
+active slot; a duplicate instead refills your ammo. Pay again on the same
+box to reroll.
+
+## Wonder Weapon: RAY GUN
+
+Mystery-box exclusive (weight 3 — rarer than EFSANE). Green-glowing rings,
+zap SFX, plasma tracers, and **every connecting hit pops a 2.6 m splash**
+that AoE-damages everything nearby. Not sellable, not in the gunsmith — pure
+box luck, +100 XP on the pull.
+
+## Weather + Day/Night
+
+Outdoor maps (Savaş Sokakları, Terk Edilmiş Fabrika) run a real **240-second
+sun arc** — dawn to moonlit night inside a run — and roll **clear / rain /
+storm** each wave. Storms bring lightning flashes, thunder and collapsed
+sight distance (fog). Rain is a single LineSegments draw call (700 drops on
+ORTA, 1200 on YÜKSEK, off on DÜŞÜK) recycled inside a column that follows
+the player — zero per-drop objects, zero per-frame allocation. Indoor maps
+keep the old light breathing. State machine is pure + unit-tested
+(`src/game/weather.js`).
+
+## Blood Pools & Corpse Staging
+
+Kills stamp a ground blood pool under the corpse (16-mesh ring buffer, one
+shared material — free per kill, no draw-call growth). Kills also **topple
+the body along the shot direction**: the zombie spins to face the bullet's
+travel and tips over with a random tumble plus a shove, so pistol kills and
+.50 CAL hits look different. Blast deaths fly away from the epicenter.
 
 ## Wall Buy + Pack-a-Punch
 

@@ -134,7 +134,7 @@ if (isMain) {
   const MODEL_TEX_SIZE = {
     'pistol.js': 32, 'rifle.js': 32, 'shotgun.js': 32,
     'm4a1.js': 32, 'mp5.js': 32, 'cal50.js': 32, 'lsw.js': 32,
-    'thompson.js': 32, 'zombie.js': 16, 'headcrab.js': 16, 'streetlamp.js': 16,
+    'thompson.js': 32, 'raygun.js': 32, 'zombie.js': 16, 'headcrab.js': 16, 'streetlamp.js': 16,
   };
   const modelFiles = readdirSync(modelDir).filter((f) => f.endsWith('.js'));
   for (const file of modelFiles) {

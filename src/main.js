@@ -13,7 +13,12 @@ import {
   PAP_COST, papLabel,
   machineSpots, wallGunSpots, wallGunNames, wallGunCost,
   BARRIER_HP, BARRIER_REPAIR_COST, barrierNeedsRepair,
+  DOWNED_DURATION, DOWNED_REVIVE_HP, DOWNED_BITE_BLEED, extendDowned, downedBar,
+  CARPET_BOMBS, CARPET_DURATION, CARPET_MIN_R, CARPET_MAX_R, CARPET_BLAST_RADIUS, CARPET_BLAST_DAMAGE,
 } from './game/zombies.js';
+import { SPECIAL_AMMO, pickChainTargets } from './game/ammoTypes.js';
+import { createRain, rollWeather, weatherIntensity, lightningDelay, rainDrops } from './game/weather.js';
+import { BloodDecals } from './gfx/BloodDecals.js';
 import { QUALITY_PRESETS, qualityByKey } from './game/perf.js';
 import { isBlockedAt } from './game/collision.js';
 import { restartCssAnim } from './ui/util.js';
@@ -322,6 +327,26 @@ const powerUps = [];
 let instaKillUntil = 0;
 let doublePointsUntil = 0;
 
+// ── Downed / last stand: instead of instant death the player crawls with a
+// bleed-out bar. Kills extend it; surviving the whole bar stands you back
+// up. Zombie bites eat the bar directly. ──
+const downed = { active: false, t: 0 };
+const downBarWrap = document.getElementById('downWrap');
+const downBarFill = document.getElementById('downBar');
+
+// ── Carpet bombing drop-in progress ({ dropped, step, n } or null) ──
+let carpet = null;
+
+// ── Weather (outdoor maps only): pure state machine + one Points column ──
+const weather = { enabled: false, state: 'clear', rain: null, fog: null, flashT: 0, boltT: 0 };
+
+// ── Day/night: outdoor maps run a real sun cycle, indoor ones just breathe ──
+let dayPhase = 0.18;
+const DAY_CYCLE_LEN = 240; // seconds for a full day
+
+// Ground blood pools (pooled ring buffer — zero allocation per kill).
+let bloodDecals = null;
+
 let thompsonMesh = null;
 let mysteryBox = null;
 let mysteryLabel = null;
@@ -500,7 +525,13 @@ function updateSunFollow() {
   if (!sun || !sun.castShadow) return;
   const q = qualityByKey(opts.quality);
   const p = controller.position;
-  sun.position.set(p.x + 28, 48, p.z + 12);
+  if (dayCycle.mode === 'cycle') {
+    // Sun rides an arc around the follow target (dayPhase 0..1 = full day).
+    const a = dayPhase * Math.PI * 2;
+    sun.position.set(p.x + Math.cos(a) * 34, Math.max(14, Math.sin(a) * 52), p.z + 12);
+  } else {
+    sun.position.set(p.x + 28, 48, p.z + 12);
+  }
   sun.target.position.set(p.x, 0, p.z);
   sun.target.updateMatrixWorld();
   const cam = sun.shadow.camera;
@@ -559,6 +590,20 @@ function spawnWave() {
   );
   const count = waveCount(round);
   const { hp, spd, dmg } = applyDifficulty(waveParams(round), difficulty);
+  const enemyOptions = (type) => ({
+    type,
+    speed: spd,
+    health: hp,
+    damage: dmg,
+    obstacles: controller.obstacles,
+    sandbags,
+    barriers,
+    windows,
+    getPeers: () => enemies,
+    // Boss-only hooks (harmless on normal types): reinforcements + roars.
+    onSummon: bossSummon,
+    onBossRoar: () => { weaponManager.sfx.bossRoar(); gamepad.rumble(0.8, 0.9, 300); },
+  });
   for (let i = 0; i < count; i++) {
     const pos = findSpawnPos();
     // Type mix gets nastier with the round (pure sprinters on sprint rounds,
@@ -566,39 +611,51 @@ function spawnWave() {
     const type = sprint ? 'sprinter'
       : crabs && Math.random() < headcrabChance(round) ? 'headcrab'
         : pickEnemyType(round, Math.random());
-    const enemy = new Enemy(scene, pos, {
-      type,
-      speed: spd,
-      health: hp,
-      damage: dmg,
-      obstacles: controller.obstacles,
-      sandbags,
-      barriers,
-      windows,
-      getPeers: () => enemies,
-    });
+    const enemy = new Enemy(scene, pos, enemyOptions(type));
     enemies.push(enemy);
   }
   // Boss round: heavy red elites walk in — big HP pool, big payout.
   if (boss) {
     for (let b = 0; b < bossCount(round); b++) {
-      const enemy = new Enemy(scene, findSpawnPos(), {
-        type: 'boss',
-        speed: spd,
-        health: hp,
-        damage: dmg,
-        obstacles: controller.obstacles,
-        sandbags,
-        barriers,
-        windows,
-        getPeers: () => enemies,
-      });
+      const enemy = new Enemy(scene, findSpawnPos(), enemyOptions('boss'));
       enemies.push(enemy);
     }
     weaponManager.sfx.zombieScream();
     gamepad.rumble(1, 1, 500);
   }
   weaponManager.setTargets(enemies.map(e => e.group));
+}
+
+/** A boss calls in 2 sprinters at its feet; capped so summons never flood. */
+function bossSummon(pos) {
+  const sprinters = enemies.reduce((n, e) => n + (e.type === 'sprinter' && e.alive && !e.dying ? 1 : 0), 0);
+  if (sprinters >= 6) return;
+  const { hp, spd, dmg } = applyDifficulty(waveParams(round), difficulty);
+  for (let i = 0; i < 2; i++) {
+    const p = findSpawnPosNear(pos);
+    const e = new Enemy(scene, p, {
+      type: 'sprinter', speed: spd, health: hp, damage: dmg,
+      obstacles: controller.obstacles, sandbags, barriers, windows,
+      getPeers: () => enemies,
+    });
+    enemies.push(e);
+    weaponManager.setTargets(enemies.map((x) => x.group));
+  }
+  showToast('☠ Boss takviye çağırdı!');
+}
+
+/** A clear spawn spot near a point (falls back to the global picker). */
+function findSpawnPosNear(pos) {
+  const out = new THREE.Vector3();
+  for (let i = 0; i < 12; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = 2.5 + Math.random() * 3;
+    const x = pos.x + Math.cos(a) * r;
+    const z = pos.z + Math.sin(a) * r;
+    if (Math.abs(x) > arenaHalf - 1 || Math.abs(z) > arenaHalf - 1) continue;
+    if (!isBlocked(x, z)) return out.set(x, 0, z);
+  }
+  return findSpawnPos();
 }
 
 /** Scatter one perk machine per perk on open ground, facing map center. */
@@ -642,7 +699,7 @@ function spawnPerkMachines() {
  */
 function spawnSpecialMachines() {
   const spots = machineSpots({ zones, isBlocked, spin: (stats.runs || 0) * 0.7 });
-  const names = WEAPON_DEFS.map((d) => d.name);
+  const names = WEAPON_DEFS.filter((d) => !d.wonder).map((d) => d.name);
   const trio = wallGunNames(names, stats.runs || 0);
 
   // Wall guns: hug building/perimeter walls, front facing the walkable side.
@@ -746,13 +803,25 @@ function placeSandbag() {
 
 // --- Power-ups (drop on kill ~25%, pick up by proximity) ---
 const POWERUP_TYPES = [
-  { key: 'Ammo', color: 0xffa726, label: 'CEP', weight: 30 },
-  { key: 'MaxAmmo', color: 0x00ff88, label: 'MAX', weight: 10 },
-  { key: 'InstaKill', color: 0xffff00, label: 'IK', weight: 14 },
-  { key: 'Nuke', color: 0xffaa00, label: 'NUK', weight: 10 },
-  { key: 'DoublePoints', color: 0x00ff00, label: 'x2', weight: 18 },
-  { key: 'MedKit', color: 0xff5252, label: 'MED', weight: 18 },
+  { key: 'Ammo', color: 0xffa726, label: 'CEP', weight: 24 },
+  { key: 'MaxAmmo', color: 0x00ff88, label: 'MAX', weight: 8 },
+  { key: 'InstaKill', color: 0xffff00, label: 'IK', weight: 12 },
+  { key: 'Nuke', color: 0xffaa00, label: 'NUK', weight: 7 },
+  { key: 'DoublePoints', color: 0x00ff00, label: 'x2', weight: 14 },
+  { key: 'MedKit', color: 0xff5252, label: 'MED', weight: 14 },
+  { key: 'Carpet', color: 0x8d6e63, label: 'CARPET', weight: 6 },
+  { key: 'DoubleAmmo', color: 0xffb300, label: 'x2CEP', weight: 8 },
+  { key: 'Dragon', color: 0xff6d00, label: 'EJDER', weight: 9 },
+  { key: 'Shock', color: 0x40c4ff, label: 'ŞOK', weight: 9 },
+  { key: 'FragRound', color: 0xef5350, label: 'PATLAR', weight: 6 },
 ];
+
+/** Carpet bombing: n bombs walk in over the player across ~2 s. */
+function startCarpetBombing() {
+  carpet = { t: 0, step: CARPET_DURATION / CARPET_BOMBS, n: CARPET_BOMBS, dropped: 0, kills: 0 };
+  showToast('✈️ HALI BOMBARDIMANI GELİYOR!');
+  gamepad.rumble(0.7, 0.9, 380);
+}
 
 function addScore(base) {
   const mult = (performance.now() < doublePointsUntil ? 2 : 1) * difficulty.scoreMul;
@@ -822,13 +891,129 @@ function applyPowerUp(key) {
       savePersisted();
       round++;
       startPrep(8);
+      if (downed.active) standUp();
+      rollNewWeather();
     }
   } else if (key === 'DoublePoints') {
     doublePointsUntil = performance.now() + 30000;
   } else if (key === 'MedKit') {
     playerHealth = Math.min(maxHealth, playerHealth + 40);
+    if (downed.active) downed.t = extendDowned(downed.t);
+  } else if (key === 'Carpet') {
+    startCarpetBombing();
+  } else if (key === 'DoubleAmmo') {
+    weaponManager.doubleReserve();
+  } else if (key === 'Dragon' || key === 'Shock' || key === 'FragRound') {
+    const type = key === 'FragRound' ? 'frag' : key === 'Dragon' ? 'dragon' : 'shock';
+    const def = weaponManager.grantSpecial(type);
+    if (def) showToast(`${def.icon} ${def.label} — ${def.hint} (${def.rounds} mermi)`);
   }
   updateHUD();
+}
+
+// ── Kill credit: the ONE place score/XP/stats/loot/downed-progress are
+// applied, shared by gunfire, fire, chains, splashes, grenades and nukes ──
+function killCredit(enemy, isHeadshot = false) {
+  gamepad.rumble(0.25, 0.45, 70);
+  addScore(Math.round(enemy.params.score * (isHeadshot ? 1.5 : 1)));
+  addXp(isHeadshot ? 15 : 10);
+  stats.kills++;
+  if (isHeadshot) stats.headshots++;
+  if (stats.kills % 5 === 0) savePersisted();
+  weaponManager.sfx.enemyDeath();
+  if (enemy.type === 'headcrab') weaponManager.sfx.headcrabChirp(0.3);
+  else weaponManager.sfx.zombieScream();
+  enemy.startDeath();
+  // Ground blood pool (pooled — free per kill).
+  bloodDecals?.splat(
+    enemy.group.position.x, enemy.group.position.z,
+    enemy.type === 'boss' || enemy.type === 'brute' ? 1.7 : 1
+  );
+  // Last stand: every kill buys back bleed-out seconds.
+  if (downed.active) {
+    downed.t = extendDowned(downed.t);
+    showToast('🩸 SON NEFES! +1.5 sn');
+  }
+  if (enemy.type === 'brute') spawnPowerUp(enemy.group.position, 'MedKit');
+  else if (enemy.type === 'boss') spawnPowerUp(enemy.group.position, 'MaxAmmo');
+  else if (Math.random() < 0.25) spawnPowerUp(enemy.group.position);
+}
+
+// ── Downed lifecycle ──
+function setDownedBar(visible, frac = 1) {
+  if (!downBarWrap || !downBarFill) return;
+  downBarWrap.classList.toggle('hidden', !visible);
+  downBarFill.style.width = `${Math.round(frac * 100)}%`;
+}
+
+function beginDowned() {
+  downed.active = true;
+  downed.t = DOWNED_DURATION;
+  playerHealth = 0;
+  controller.downed = true;
+  weaponManager.sfx.bossRoar(); // low "I'm hit" sting
+  gamepad.rumble(1, 1, 600);
+  showToast('🩸 YERE DÜŞTÜN! Kanarken öldür, ya da bar bitince ayağa kalk');
+  setDownedBar(true, 1);
+  updateHUD();
+}
+
+function standUp() {
+  downed.active = false;
+  controller.downed = false;
+  playerHealth = DOWNED_REVIVE_HP;
+  setDownedBar(false);
+  weaponManager.sfx.powerUp();
+  gamepad.rumble(0.5, 0.8, 220);
+  showToast(`🩸 AYAĞA KALKTIN! +${DOWNED_REVIVE_HP} can`);
+  updateHUD();
+}
+
+/** Terminal death: freeze the run and wait for "Play Again". */
+function gameOver() {
+  downed.active = false;
+  setDownedBar(false);
+  pendingRestart = true;
+  if (score > stats.bestScore) stats.bestScore = score;
+  if (round > stats.bestRound) stats.bestRound = round;
+  recordBestRun();
+  savePersisted();
+  for (const e of enemies) e.release();
+  enemies = [];
+  weaponManager.setTargets([]);
+  overlay.classList.remove('hidden');
+  overlay.querySelector('h1').textContent = 'GAME OVER';
+  overlay.querySelector('p').textContent = `Skor: ${score} · Tur: ${round}`;
+  startBtn.textContent = '↻ Tekrar Oyna';
+  pausePanel?.classList.add('hidden');
+  gamepad.rumble(1, 1, 700);
+  document.exitPointerLock();
+}
+
+// ── Explosion sweep: apply a blast to every live zombie, credit the kills ──
+function blastEnemies(center, radius, damage) {
+  let kills = 0;
+  for (const e of enemies) {
+    if (!e.alive || e.dying) continue;
+    if (e.group.position.distanceTo(center) < radius && e.applyExplosion(center, radius, damage)) {
+      kills++;
+      killCredit(e);
+    }
+  }
+  if (kills) weaponManager.setTargets(enemies.filter((e) => e.alive && !e.dying).map((e) => e.group));
+  return kills;
+}
+
+// ── Weather: state roll + cheap per-frame drive (rain column, fog, bolts) ──
+function rollNewWeather() {
+  if (!weather.enabled) return;
+  weather.state = rollWeather(round);
+  if (weather.state === 'storm') {
+    weather.boltT = 1.5 + Math.random() * 3;
+    showToast('⛈️ Fırtına çöküyor!');
+  } else if (weather.state === 'rain') {
+    showToast('🌧️ Yağmur bastırıyor');
+  }
 }
 
 // ── Explosion FX (bomber detonation): expanding additive orb ──
@@ -838,7 +1023,7 @@ const fxList = [];
 const ORB_GEO = new THREE.SphereGeometry(0.5, 12, 12);
 const orbPool = [];
 
-function spawnExplosion(pos, playSound = true) {
+function spawnExplosion(pos, playSound = true, color = 0xff9944) {
   if (!scene) return;
   if (playSound) weaponManager.sfx.explosion();
   let orb = orbPool.pop();
@@ -852,6 +1037,7 @@ function spawnExplosion(pos, playSound = true) {
     });
     orb = new THREE.Mesh(ORB_GEO, mat);
   }
+  orb.material.color.setHex(color);
   orb.material.opacity = 0.95;
   orb.visible = true;
   orb.position.copy(pos).setY(0.8);
@@ -934,6 +1120,8 @@ function updateBuffs(now) {
   if (!hudBuffs) return;
   const parts = [];
   if (difficulty.scoreMul > 1) parts.push(`${difficulty.icon} ${difficulty.label} x${difficulty.scoreMul}`);
+  if (weather.enabled && weather.state === 'storm') parts.push('⛈ FIRTINA');
+  else if (weather.enabled && weather.state === 'rain') parts.push('🌧 YAĞMUR');
   if (now < instaKillUntil) parts.push(`☠ INSTA-KILL ${Math.ceil((instaKillUntil - now) / 1000)}s`);
   if (now < doublePointsUntil) parts.push(`✕2 PUAN ${Math.ceil((doublePointsUntil - now) / 1000)}s`);
   const txt = parts.join('   ·   ');
@@ -1022,7 +1210,6 @@ function buildGame() {
   scene = built.scene;
   arenaHalf = built.arenaHalf ?? 45;
   lightPool.defs = built.pointLights || [];
-
   // Zones & barriers: gated zones stay locked (and spawn-inert) until bought.
   barriers.length = 0;
   for (const b of built.barriers || []) barriers.push({ ...b, open: false, hp: BARRIER_HP, collapsed: false });
@@ -1060,21 +1247,43 @@ function buildGame() {
       weaponManager.sfx.enemyHit();
     },
     onEnemyKilled: (enemy, isHeadshot) => {
-      gamepad.rumble(0.25, 0.45, 70);
-      addScore(Math.round(enemy.params.score * (isHeadshot ? 1.5 : 1)));
-      addXp(isHeadshot ? 15 : 10);
-      stats.kills++;
-      if (isHeadshot) stats.headshots++;
-      if (stats.kills % 5 === 0) savePersisted();
-      weaponManager.sfx.enemyDeath();
-      if (enemy.type === 'headcrab') weaponManager.sfx.headcrabChirp(0.3);
-      else weaponManager.sfx.zombieScream();
-      enemy.startDeath();
+      killCredit(enemy, isHeadshot);
       // Remove from targets immediately so it can't be shot again
       weaponManager.setTargets(enemies.filter(e => e.alive).map(e => e.group));
-      if (enemy.type === 'brute') spawnPowerUp(enemy.group.position, 'MedKit');
-      else if (enemy.type === 'boss') spawnPowerUp(enemy.group.position, 'MaxAmmo');
-      else if (Math.random() < 0.25) spawnPowerUp(enemy.group.position);
+    },
+    // Power-up ammo impact pass (burn ignite / stun + zap chain / mini blast).
+    onSpecialShot: (kind, hitEnemy, point) => {
+      const def = SPECIAL_AMMO[kind];
+      if (!def) return;
+      if (kind === 'dragon') {
+        if (hitEnemy) hitEnemy.ignite(def.burnSeconds);
+      } else if (kind === 'shock') {
+        weaponManager.sfx.zap(0.5, audioPan(point));
+        if (hitEnemy) hitEnemy.stun(def.stunSeconds);
+        const others = [];
+        for (const e of enemies) {
+          if (e === hitEnemy || !e.alive || e.dying) continue;
+          others.push({ x: e.group.position.x, z: e.group.position.z, ref: e });
+        }
+        const chain = pickChainTargets(others, point.x, point.z, def.chainRadius, def.chainTargets);
+        for (const t of chain) {
+          t.stun(def.stunSeconds * 0.7);
+          if (t.takeDamage(def.chainDamage)) killCredit(t);
+        }
+        if (chain.length) weaponManager.sfx.zap(0.3);
+      } else if (kind === 'frag') {
+        spawnExplosion(point, false, 0xffa044);
+        gamepad.rumble(0.55, 0.6, 110);
+        blastEnemies(point, def.blastRadius, def.blastDamage);
+      }
+    },
+    onSpecialEnd: () => showToast('Özel mermi bitti'),
+    // Ray Gun splash: green plasma pop at the impact point.
+    onSplash: (point, radius, damage) => {
+      spawnExplosion(point, false, 0x58ff6e);
+      gamepad.rumble(0.35, 0.5, 90);
+      const kills = blastEnemies(point, radius, damage);
+      if (kills) addScore(20 * kills);
     },
     // Grenade throw / detonation: refresh the gear readout right away.
     onAmmoChange: () => updateHUD(),
@@ -1098,20 +1307,8 @@ function buildGame() {
     onGrenade: (pos) => {
       spawnExplosion(pos, false); // explosion SFX already played by the thrower
       gamepad.rumble(1, 0.8, 320);
-      let kills = 0;
-      for (const e of enemies) {
-        if (!e.alive || e.dying) continue;
-        if (e.group.position.distanceTo(pos) < 5 && e.applyExplosion(pos, 5, 8)) {
-          kills++;
-          stats.kills++;
-          addXp(5);
-        }
-      }
-      if (kills) {
-        addScore(60 * kills);
-        showToast(`💣 ${kills} zombi paramparça!`);
-      }
-      weaponManager.setTargets(enemies.filter((e) => e.alive && !e.dying).map((e) => e.group));
+      const kills = blastEnemies(pos, 5, 8);
+      if (kills) showToast(`💣 ${kills} zombi paramparça!`);
       const selfD = pos.distanceTo(controller.position);
       if (selfD < 4) {
         const selfDmg = Math.max(1, Math.round(20 * (1 - selfD / 4)));
@@ -1329,14 +1526,21 @@ function buildGame() {
       const gift = weightedPick(MYSTERY_POOL);
       const granted = weaponManager.grantWeapon(gift.name);
       weaponManager.sfx.powerUp();
-      gamepad.rumble(gift.rarity === 'EFSANE' || gift.rarity === 'NADIR' ? 0.9 : 0.5, 0.8, 220);
-      showToast(
-        granted
-          ? `🎲 ${gift.rarity}: ${
-              (WEAPON_DEFS.find((d) => d.name === granted) || weaponManager.activeDef).label
-            }!`
-          : `🎲 Aynısından vardı — cephane doldu (${gift.rarity})`
-      );
+      if (gift.rarity === 'WONDER') {
+        weaponManager.sfx.rayShot();
+        gamepad.rumble(1, 1, 600);
+        addXp(100);
+        showToast('🛸 WONDER WEAPON: RAY GUN!!');
+      } else {
+        gamepad.rumble(gift.rarity === 'EFSANE' || gift.rarity === 'NADIR' ? 0.9 : 0.5, 0.8, 220);
+        showToast(
+          granted
+            ? `🎲 ${gift.rarity}: ${
+                (WEAPON_DEFS.find((d) => d.name === granted) || weaponManager.activeDef).label
+              }!`
+            : `🎲 Aynısından vardı — cephane doldu (${gift.rarity})`
+        );
+      }
     }
   }
 
@@ -1353,6 +1557,10 @@ function buildGame() {
   doublePointsUntil = 0;
   machines.length = 0;
   for (const k of Object.keys(perksHeld)) delete perksHeld[k];
+  downed.active = false;
+  downed.t = 0;
+  setDownedBar(false);
+  carpet = null;
 
   // Day/night cycle: remember the scene's base light intensities.
   dayCycle.t = 0;
@@ -1362,6 +1570,30 @@ function buildGame() {
   dayCycle.sunBase = dayCycle.sun ? dayCycle.sun.intensity : 0;
   dayCycle.hemiBase = dayCycle.hemi ? dayCycle.hemi.intensity : 0;
   dayCycle.ambBase = dayCycle.ambient ? dayCycle.ambient.intensity : 0;
+  // Outdoor maps run a real sun arc (dawn → dusk); the rest keep the old
+  // ~3-minute intensity breathing (the bunker has no sun at all anyway).
+  dayCycle.mode = built.meta?.outdoor ? 'cycle' : 'breathe';
+  dayPhase = 0.16; // early morning — night falls deep into a run
+
+  // Weather: rain column + fog + lightning only where the sky is open.
+  weather.enabled = !!built.meta?.outdoor;
+  weather.state = 'clear';
+  weather.flashT = 0;
+  weather.boltT = 0;
+  weather.rain = null;
+  weather.fog = scene.fog
+    ? { near: scene.fog.near, far: scene.fog.far }
+    : null;
+  if (weather.enabled) {
+    const n = rainDrops(opts.quality);
+    if (n > 0) {
+      weather.rain = createRain(n);
+      scene.add(weather.rain.points);
+    }
+  }
+
+  // Ground blood pool ring (fresh kills stamp the oldest splat).
+  bloodDecals = new BloodDecals(scene, 18);
 
   // Wall-gun mounts + the Pack-a-Punch station first, then perk machines
   // scattered around them (the perk spots avoid every special machine).
@@ -1444,6 +1676,22 @@ function teardownGame() {
   windows.length = 0;
   wallGuns.length = 0;
   papMachine = null;
+
+  // Downed / weather / blood state — the rain mesh and pooled decals live
+  // in the old scene; drop our references before the GPU sweep below.
+  downed.active = false;
+  downed.t = 0;
+  setDownedBar(false);
+  carpet = null;
+  weather.enabled = false;
+  weather.rain = null;
+  weather.state = 'clear';
+  weather.flashT = 0;
+  weather.fog = null;
+  if (bloodDecals) {
+    bloodDecals.dispose();
+    bloodDecals = null;
+  }
   if (dayCycle.sun?.shadow?.map) { dayCycle.sun.shadow.map.dispose(); dayCycle.sun.shadow.map = null; }
 
   // Light pool slots live in the old scene.
@@ -1755,12 +2003,86 @@ function animate() {
     }
   }
 
-  // Day/night breathing: sun/hemi/ambient pulse slowly over ~3 minutes.
+  // ── Day/night + weather ── outdoor maps run a full sun arc (a day passes
+  // every DAY_CYCLE_LEN seconds); indoor maps keep the old breathing. The
+  // rain column, fog squeeze and lightning flash ride the weather state.
   dayCycle.t += dt;
-  const dayK = 0.72 + 0.28 * Math.sin(dayCycle.t * 0.03);
-  if (dayCycle.sun) dayCycle.sun.intensity = dayCycle.sunBase * dayK;
-  if (dayCycle.hemi) dayCycle.hemi.intensity = dayCycle.hemiBase * dayK;
-  if (dayCycle.ambient) dayCycle.ambient.intensity = dayCycle.ambBase * (0.85 + 0.15 * dayK);
+  let dayK;
+  if (dayCycle.mode === 'cycle' && dayCycle.sun) {
+    dayPhase = (dayPhase + dt / DAY_CYCLE_LEN) % 1;
+    const elev = Math.sin(dayPhase * Math.PI * 2); // +1 noon … -1 midnight
+    dayK = THREE.MathUtils.clamp(elev * 1.15 + 0.22, 0.12, 1); // moonlit floor
+    if (dayCycle.sun) dayCycle.sun.intensity = dayCycle.sunBase;
+    if (dayCycle.hemi) dayCycle.hemi.intensity = dayCycle.hemiBase * dayK;
+    if (dayCycle.ambient) dayCycle.ambient.intensity = dayCycle.ambBase * (0.55 + 0.45 * dayK);
+  } else {
+    dayK = 0.72 + 0.28 * Math.sin(dayCycle.t * 0.03);
+    if (dayCycle.sun) dayCycle.sun.intensity = dayCycle.sunBase * dayK;
+    if (dayCycle.hemi) dayCycle.hemi.intensity = dayCycle.hemiBase * dayK;
+    if (dayCycle.ambient) dayCycle.ambient.intensity = dayCycle.ambBase * (0.85 + 0.15 * dayK);
+  }
+  if (weather.enabled) {
+    const wi = weatherIntensity(weather.state);
+    if (weather.rain) {
+      weather.rain.points.visible = wi > 0;
+      if (wi > 0) weather.rain.update(dt, controller.position.x, controller.position.z);
+    }
+    if (weather.fog && scene.fog) {
+      // wet air: sightlines collapse toward the fog centre
+      const farT = weather.fog.far * (wi > 0 ? (weather.state === 'storm' ? 0.45 : 0.65) : 1);
+      const nearT = weather.fog.near * (wi > 0 ? 0.6 : 1);
+      scene.fog.far = THREE.MathUtils.lerp(scene.fog.far, farT, Math.min(1, dt * 1.2));
+      scene.fog.near = THREE.MathUtils.lerp(scene.fog.near, nearT, Math.min(1, dt * 1.2));
+    }
+    weaponManager.sfx.setRain(wi * 0.85);
+    if (weather.state === 'storm') {
+      weather.boltT -= dt;
+      if (weather.boltT <= 0) {
+        weather.flashT = 0.18;
+        weather.boltT = lightningDelay('storm');
+        weaponManager.sfx.thunder();
+      }
+    }
+    if (weather.flashT > 0) {
+      weather.flashT -= dt;
+      const f = Math.max(0, weather.flashT / 0.18);
+      const boost = 1 + f * 3;
+      if (dayCycle.sun) dayCycle.sun.intensity *= boost;
+      if (dayCycle.hemi) dayCycle.hemi.intensity *= boost;
+      if (dayCycle.ambient) dayCycle.ambient.intensity *= boost;
+    }
+  }
+
+  // ── Carpet bombing: bombs land on a fixed cadence over ~2 seconds ──
+  if (carpet) {
+    carpet.t += dt;
+    let landed = false;
+    while (carpet.dropped < carpet.n && carpet.t >= carpet.dropped * carpet.step) {
+      const a = Math.random() * Math.PI * 2;
+      const r = CARPET_MIN_R + Math.random() * (CARPET_MAX_R - CARPET_MIN_R);
+      const bx = THREE.MathUtils.clamp(controller.position.x + Math.cos(a) * r, -arenaHalf + 1, arenaHalf - 1);
+      const bz = THREE.MathUtils.clamp(controller.position.z + Math.sin(a) * r, -arenaHalf + 1, arenaHalf - 1);
+      const bp = new THREE.Vector3(bx, 0, bz);
+      spawnExplosion(bp, true);
+      gamepad.rumble(0.6, 0.7, 110);
+      carpet.kills += blastEnemies(bp, CARPET_BLAST_RADIUS, CARPET_BLAST_DAMAGE);
+      carpet.dropped++;
+      landed = true;
+    }
+    if (landed) gamepad.rumble(0.5, 0.6, 90);
+    if (carpet.dropped >= carpet.n) {
+      if (carpet.kills) showToast(`✈️ ${carpet.kills} zombi havan ateşiyle temizlendi`);
+      carpet = null;
+    }
+  }
+
+  // ── Bleed-out clock (downed): ticks down, kills push it back up ──
+  if (downed.active) {
+    downed.t -= dt;
+    if (downBarFill) downBarFill.style.width = `${Math.round(downedBar(downed.t) * 100)}%`;
+    if (downed.t <= 0) gameOver();
+  }
+
 
   // Prep phase countdown (build / heal time between waves).
   if (waveState === 'prep') {
@@ -1824,8 +2146,8 @@ function animate() {
     }
   }
 
-  // Critical-HP heartbeat: thump + red vignette pulse.
-  if (playerHealth < 30 && playerHealth > 0 && waveState === 'active') {
+  // Critical-HP heartbeat: thump + red vignette pulse (also while downed).
+  if ((downed.active || (playerHealth < 30 && playerHealth > 0)) && waveState === 'active') {
     beatTimer -= dt;
     if (beatTimer <= 0) {
       beatTimer = THREE.MathUtils.lerp(1.0, 0.45, 1 - playerHealth / 30);
@@ -1844,7 +2166,10 @@ function animate() {
   if (enemies.length) Enemy.prepareFrame(enemies, controller.obstacles);
 
   for (let i = enemies.length - 1; i >= 0; i--) {
+    // The array can be emptied mid-iteration (game over) or reshuffled by
+    // boss summons; skip stale indices instead of reading undefined.
     const enemy = enemies[i];
+    if (!enemy) continue;
     if (enemy.dying) {
       // Advance the death animation so it actually plays and deathDone
       // can become true (update() is a no-op AI-wise while dying).
@@ -1865,6 +2190,8 @@ function animate() {
           round++;
           updateHUD();
           startPrep(8);
+          if (downed.active) standUp(); // held out till the wave died: up you get
+          rollNewWeather();
         }
       }
       continue;
@@ -1883,8 +2210,16 @@ function animate() {
       enemy.release();
       enemies.splice(i, 1);
     }
+    // Dragon's Breath DoT: Enemy.update banked whole HP chunks here.
+    if (enemy.burnDamage > 0) {
+      const burn = enemy.burnDamage;
+      enemy.burnDamage = 0;
+      if (enemy.alive && !enemy.dying && enemy.takeDamage(burn)) {
+        killCredit(enemy);
+        weaponManager.setTargets(enemies.filter((e) => e.alive && !e.dying).map((e) => e.group));
+      }
+    }
     if (dmg > 0) {
-      playerHealth -= dmg;
       // Hit feedback: camera flinch + red vignette flash
       controller.addHitFlinch();
       const dmgEl = document.getElementById('damage');
@@ -1895,33 +2230,24 @@ function animate() {
       }
       weaponManager.sfx.playerHurt();
       gamepad.rumble(0.6, 1, 180);
-      updateHUD();
-      if (playerHealth <= 0) {
-        if (weaponManager.perks.quickRevive) {
-          // Consume Quick Revive: come back fighting instead of dying.
-          weaponManager.perks.quickRevive = false;
-          playerHealth = 50;
-          showToast('🚑 QUICK REVIVE!');
-          weaponManager.sfx.powerUp();
-          updateHUD();
-        } else {
-          // Freeze the run: clear the field and wait for "Play Again",
-          // which rebuilds everything via restartRun().
-          pendingRestart = true;
-          if (score > stats.bestScore) stats.bestScore = score;
-          if (round > stats.bestRound) stats.bestRound = round;
-          recordBestRun();
-          savePersisted();
-          for (const e of enemies) e.release();
-          enemies = [];
-          weaponManager.setTargets([]);
-          overlay.classList.remove('hidden');
-          overlay.querySelector('h1').textContent = 'GAME OVER';
-          overlay.querySelector('p').textContent = `Skor: ${score} · Tur: ${round}`;
-          startBtn.textContent = '↻ Tekrar Oyna';
-          pausePanel?.classList.add('hidden');
-          gamepad.rumble(1, 1, 700);
-          document.exitPointerLock();
+      if (downed.active) {
+        // Downed already: bites eat the bleed-out bar instead of HP.
+        downed.t = Math.max(0, downed.t - dmg * DOWNED_BITE_BLEED);
+        if (downed.t <= 0) gameOver();
+      } else {
+        playerHealth -= dmg;
+        updateHUD();
+        if (playerHealth <= 0) {
+          if (weaponManager.perks.quickRevive) {
+            // Consume Quick Revive: come back fighting instead of going down.
+            weaponManager.perks.quickRevive = false;
+            playerHealth = 50;
+            showToast('🚑 QUICK REVIVE!');
+            weaponManager.sfx.powerUp();
+            updateHUD();
+          } else {
+            beginDowned();
+          }
         }
       }
     }
@@ -2018,6 +2344,10 @@ window.__fpz = {
       papHeld: weaponManager ? [...weaponManager.papHeld] : [],
       grenadesReady: weaponManager ? weaponManager.grenadesReady : 0,
       difficulty: difficulty.key,
+      downed: downed.active ? Math.round(downed.t * 10) / 10 : 0,
+      weather: weather.state,
+      dayPhase: Math.round(dayPhase * 1000) / 1000,
+      special: weaponManager ? weaponManager.special : null,
       player: controller ? { x: controller.position.x, z: controller.position.z } : null,
     };
   },
@@ -2035,5 +2365,53 @@ window.__fpz = {
       controller.position.set(x, controller.position.y, z);
       camera.position.set(x, 1.6, z);
     }
+  },
+  // Debug-only conveniences (browser console + headless smoke tests).
+  wep() {
+    if (!weaponManager) return null;
+    const w = weaponManager.active;
+    return {
+      name: w.def.name, ammo: w.ammo, swapping: weaponManager.swapping,
+      reloading: w.reloading, targets: weaponManager._shootingTargets.length,
+    };
+  },
+  giveWeapon(name) {
+    if (weaponManager) weaponManager.grantWeapon(name);
+  },
+  giveSpecial(key) {
+    if (weaponManager) weaponManager.grantSpecial(key);
+  },
+  setWeather(state) {
+    weather.enabled = true;
+    weather.state = state;
+  },
+  goDowned() {
+    if (scene && controller && !downed.active && !pendingRestart) beginDowned();
+  },
+  fireOnce() {
+    weaponManager?._tryShoot();
+  },
+  aimAhead() {
+    if (controller) {
+      controller._yaw = 0;
+      controller._pitch = 0;
+      controller.mouse.x = 0;
+      controller.mouse.y = 0;
+    }
+  },
+  // Drop a live zombie a few metres ahead of the player (for FX testing).
+  spawnTestZombie() {
+    if (!scene) return false;
+    const { hp, spd, dmg } = applyDifficulty(waveParams(round), difficulty);
+    const p = controller.position.clone().add(new THREE.Vector3(0, 0, -3));
+    const e = new Enemy(scene, p, {
+      type: 'normal', speed: spd, health: hp, damage: dmg,
+      obstacles: controller.obstacles, sandbags, barriers, windows,
+      getPeers: () => enemies,
+    });
+    e.animator.stop(); // hold still so the test can aim at it
+    enemies.push(e);
+    weaponManager.setTargets(enemies.map((x) => x.group));
+    return true;
   },
 };

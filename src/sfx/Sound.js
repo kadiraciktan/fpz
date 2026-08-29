@@ -567,6 +567,146 @@ export class Sfx {
     }
   }
 
+  /** Ray Gun: descending sci-fi zap with a bright attack. */
+  rayShot() {
+    if (!this.ctx) return;
+    const t = this._now();
+    const osc = this.ctx.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(1200, t);
+    osc.frequency.exponentialRampToValueAtTime(180, t + 0.16);
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = 1400;
+    bp.Q.value = 2.5;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.4, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+    osc.connect(bp).connect(g).connect(this.master);
+    osc.start(t);
+    osc.stop(t + 0.22);
+    // Bright crackle layer
+    this._clack(t, 3200, 0.06, 0.25);
+    this._clack(t + 0.03, 1800, 0.08, 0.15);
+  }
+
+  /** Shock round: electric crackle (hit or chain arc). */
+  zap(vol = 0.4, pan = 0) {
+    if (!this.ctx) return;
+    const t = this._now();
+    const osc = this.ctx.createOscillator();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(2400, t);
+    osc.frequency.exponentialRampToValueAtTime(500, t + 0.09);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+    osc.connect(g).connect(this._panner(pan));
+    osc.start(t);
+    osc.stop(t + 0.14);
+    this._clack(t, 4200, 0.05, vol * 0.6);
+    this._clack(t + 0.04, 2600, 0.04, vol * 0.4);
+  }
+
+  /** Dragon's Breath: short flame whoosh. */
+  flame() {
+    if (!this.ctx) return;
+    const t = this._now();
+    const noise = this._noiseBuffer(0.22);
+    const src = this.ctx.createBufferSource();
+    src.buffer = noise;
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.setValueAtTime(900, t);
+    bp.frequency.exponentialRampToValueAtTime(220, t + 0.2);
+    bp.Q.value = 0.7;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.4, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+    src.connect(bp).connect(g).connect(this.master);
+    src.start(t);
+    src.stop(t + 0.24);
+  }
+
+  /** Boss roar: long guttural bellow that rattles the sub-bass. */
+  bossRoar() {
+    if (!this.ctx) return;
+    const t = this._now();
+    const osc = this.ctx.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(70, t);
+    osc.frequency.linearRampToValueAtTime(130, t + 0.3);
+    osc.frequency.exponentialRampToValueAtTime(48, t + 1.1);
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 500;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.001, t);
+    g.gain.exponentialRampToValueAtTime(0.5, t + 0.12);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 1.2);
+    osc.connect(lp).connect(g).connect(this.master);
+    osc.start(t);
+    osc.stop(t + 1.25);
+    // Sub-bass chest rumble under the bellow
+    const sub = this.ctx.createOscillator();
+    sub.type = 'sine';
+    sub.frequency.setValueAtTime(45, t);
+    sub.frequency.exponentialRampToValueAtTime(26, t + 1.0);
+    const sg = this.ctx.createGain();
+    sg.gain.setValueAtTime(0.4, t);
+    sg.gain.exponentialRampToValueAtTime(0.001, t + 1.1);
+    sub.connect(sg).connect(this.master);
+    sub.start(t);
+    sub.stop(t + 1.15);
+  }
+
+  /** Thunder: long rolling low rumble with a crack up front. */
+  thunder() {
+    if (!this.ctx) return;
+    const t = this._now();
+    const noise = this._noiseBuffer(1.2);
+    const src = this.ctx.createBufferSource();
+    src.buffer = noise;
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(900, t);
+    lp.frequency.exponentialRampToValueAtTime(90, t + 1.1);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.55, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 1.2);
+    src.connect(lp).connect(g).connect(this.master);
+    src.start(t);
+    src.stop(t + 1.25);
+    this._clack(t, 2500, 0.08, 0.3);
+  }
+
+  /** Looping rain bed: level follows the weather intensity (0 = silent). */
+  setRain(level) {
+    if (!this.ctx) return;
+    const lv = Math.max(0, Math.min(1, level));
+    if (lv <= 0 && !this._rain) return;
+    if (!this._rain) {
+      const noise = this._noiseBuffer(2.0, true);
+      const src = this.ctx.createBufferSource();
+      src.buffer = noise;
+      src.loop = true;
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = 2200;
+      bp.Q.value = 0.4;
+      const g = this.ctx.createGain();
+      g.gain.value = 0;
+      src.connect(bp).connect(g).connect(this.master);
+      src.start();
+      this._rain = { src, g };
+      this._ambienceNodes.push(src);
+    }
+    this._rain.g.gain.linearRampToValueAtTime(
+      lv * 0.12,
+      this._now() + 1.5
+    );
+  }
+
   /** Melee swing: filtered air whoosh. */
   meleeWhoosh() {
     if (!this.ctx) return;

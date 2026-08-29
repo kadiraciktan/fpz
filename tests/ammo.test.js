@@ -40,11 +40,11 @@ test('weightedPick honors weights deterministically via injected rand', () => {
   assert.equal(weightedPick(pool, () => 0.999).name, 'rare');
 });
 
-test('mystery pool covers all 8 weapons with positive weights', () => {
-  assert.equal(MYSTERY_POOL.length, 8);
+test('mystery pool covers all 9 weapons with positive weights', () => {
+  assert.equal(MYSTERY_POOL.length, 9);
   for (const e of MYSTERY_POOL) assert.ok(e.weight > 0);
   const names = new Set(MYSTERY_POOL.map((e) => e.name));
-  assert.equal(names.size, 8);
+  assert.equal(names.size, 9);
 });
 
 test('ammo crate tops up less than a full initial reserve for a full gun', () => {

@@ -232,3 +232,43 @@ export function wallGunNames(allNames, runIndex = 0) {
 export function wallGunCost(index) {
   return WALL_GUN_COSTS[Math.min(index, WALL_GUN_COSTS.length - 1)];
 }
+
+// ════════════════════════ DOWNED / LAST STAND ════════════════════════
+
+/** Bleed-out seconds once the player is downed (crawling, not dead yet). */
+export const DOWNED_DURATION = 12;
+
+/** Seconds the bleed-out bar grows for every kill scored while downed. */
+export const DOWNED_KILL_BONUS = 1.5;
+
+/** HP restored when the player survives the whole bleed-out and stands up. */
+export const DOWNED_REVIVE_HP = 40;
+
+/** Move-speed multiplier while crawling (downed). */
+export const DOWNED_SPEED_MUL = 0.32;
+
+/** Camera eye height (m) while downed — the view drops to the floor. */
+export const DOWNED_EYE = 0.55;
+
+/** Fraction of the bleed-out bar each incoming zombie bite eats. */
+export const DOWNED_BITE_BLEED = 0.3;
+
+/** Cap the kill bonus so one wave-clear can't top the bar up forever. */
+export function extendDowned(remaining, max = DOWNED_DURATION) {
+  return Math.min(max, remaining + DOWNED_KILL_BONUS);
+}
+
+/** 0..1 bleed-out bar for the HUD. */
+export function downedBar(remaining) {
+  return Math.max(0, Math.min(1, remaining / DOWNED_DURATION));
+}
+
+// ════════════════════════ CARPET BOMBING ════════════════════════
+
+/** Power-up: bombs the sky drops, spread and fallout (all reused FX). */
+export const CARPET_BOMBS = 12;
+export const CARPET_DURATION = 2.2; // seconds the run lasts
+export const CARPET_MIN_R = 3; // keep the first ring off the player
+export const CARPET_MAX_R = 16;
+export const CARPET_BLAST_RADIUS = 5;
+export const CARPET_BLAST_DAMAGE = 10;
