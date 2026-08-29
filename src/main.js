@@ -1,13 +1,21 @@
 import * as THREE from 'three';
 import { createScene, flickerLights, MAPS } from './Scene.js';
 import { FPSController } from './FPSController.js';
-import { WeaponManager, createLegsMesh, ATTACHMENTS, WEAPON_DEFS, DEFAULT_LOADOUT, MYSTERY_POOL } from './Weapons.js';
+import { WeaponManager, createLegsMesh, ATTACHMENTS, WEAPON_DEFS, WEAPON_LABELS, DEFAULT_LOADOUT, MYSTERY_POOL } from './Weapons.js';
 import { createGunsmithScreen } from './ui/gunsmith.js';
 import { Enemy } from './Enemy.js';
-import { createSandbag, createPerkMachine, markMachineSold } from './Prefabs.js';
+import { createSandbag, createPerkMachine, markMachineSold, createWallGun, createPapMachine, retintLabelSign } from './Prefabs.js';
 import { GamepadInput, GamepadMenuNav } from './Gamepad.js';
 import { waveCount, waveParams, pickEnemyType, isBossRound, bossCount, isSprintRound, isHeadcrabRound, headcrabChance, waveIntensity } from './game/waves.js';
 import { weightedPick } from './weapons/ammo.js';
+import {
+  DIFFICULTIES, difficultyByKey, applyDifficulty,
+  PAP_COST, papLabel,
+  machineSpots, wallGunSpots, wallGunNames, wallGunCost,
+  BARRIER_HP, BARRIER_REPAIR_COST, barrierNeedsRepair,
+} from './game/zombies.js';
+import { QUALITY_PRESETS, qualityByKey } from './game/perf.js';
+import { isBlockedAt } from './game/collision.js';
 
 /**
  * main.js
@@ -19,13 +27,15 @@ import { weightedPick } from './weapons/ammo.js';
 const canvas = document.getElementById('game');
 const renderer = new THREE.WebGLRenderer({
   canvas,
-  antialias: true,
+  antialias: false,
   powerPreference: 'high-performance',
+  stencil: false,
 });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.25));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = THREE.PCFShadowMap;
+renderer.info.autoReset = false;
 
 // --- Camera (persistent across games) ---
 const camera = new THREE.PerspectiveCamera(
@@ -47,33 +57,22 @@ const toastsEl = document.getElementById('toasts');
 const hudGear = document.getElementById('gear');
 const hudPrep = document.getElementById('prep');
 const hudPerks = document.getElementById('perks');
+const hudBuffs = document.getElementById('buffs');
+const compassEl = document.getElementById('compass');
+const compassCtx = compassEl ? compassEl.getContext('2d') : null;
 
 // ════════════════════════════ MAIN MENU ════════════════════════════
 
 const menuEl = document.getElementById('mainMenu');
 const mapCardsEl = document.getElementById('mapCards');
+const diffRowEl = document.getElementById('diffRow');
 
 const setup = {
   mapId: 'street',
+  difficulty: 'normal',
   attachments: {},
   skins: {},
 };
-
-// Map cards
-for (const map of MAPS) {
-  const card = document.createElement('div');
-  card.className = 'mapCard' + (map.id === setup.mapId ? ' selected' : '');
-  card.innerHTML = `
-    <div class="swatch" style="background:${map.swatch}"></div>
-    <div class="mapName">${map.name}</div>
-    <div class="mapDesc">${map.desc}</div>`;
-  card.addEventListener('click', () => {
-    setup.mapId = map.id;
-    mapCardsEl.querySelectorAll('.mapCard').forEach((c) => c.classList.remove('selected'));
-    card.classList.add('selected');
-  });
-  mapCardsEl.appendChild(card);
-}
 
 // Attachment + skin state per weapon (all slots off / default skin),
 // plus the 4-slot loadout (CoD-style: choose a weapon per slot).
@@ -83,6 +82,65 @@ for (const d of WEAPON_DEFS) {
   setup.skins[d.name] = 'default';
 }
 setup.loadout = [...DEFAULT_LOADOUT];
+
+// Restore the last deployment (map / difficulty / loadout / attachments).
+const SETUP_KEY = 'zombieFront.setup';
+try {
+  const saved = JSON.parse(localStorage.getItem(SETUP_KEY) || 'null');
+  if (saved) {
+    if (MAPS.some((m) => m.id === saved.mapId)) setup.mapId = saved.mapId;
+    if (DIFFICULTIES.some((d) => d.key === saved.difficulty)) setup.difficulty = saved.difficulty;
+    for (const [w, v] of Object.entries(saved.attachments || {})) {
+      if (setup.attachments[w]) Object.assign(setup.attachments[w], v);
+    }
+    for (const [w, v] of Object.entries(saved.skins || {})) {
+      if (setup.skins[w]) setup.skins[w] = v;
+    }
+    if (Array.isArray(saved.loadout) && saved.loadout.length === 4) setup.loadout = saved.loadout;
+  }
+} catch { /* corrupt setup blob: defaults */ }
+
+function saveSetup() {
+  try { localStorage.setItem(SETUP_KEY, JSON.stringify(setup)); } catch { /* ignore */ }
+}
+
+// Map cards (with the per-map lifetime record line)
+for (const map of MAPS) {
+  const card = document.createElement('div');
+  card.className = 'mapCard' + (map.id === setup.mapId ? ' selected' : '');
+  card.dataset.mapId = map.id;
+  card.innerHTML = `
+    <div class="swatch" style="background:${map.swatch}"></div>
+    <div class="mapName">${map.name}</div>
+    <div class="mapDesc">${map.desc}</div>
+    <div class="mapRecord" id="rec-${map.id}"></div>`;
+  card.addEventListener('click', () => {
+    setup.mapId = map.id;
+    mapCardsEl.querySelectorAll('.mapCard').forEach((c) => c.classList.remove('selected'));
+    card.classList.add('selected');
+    saveSetup();
+  });
+  mapCardsEl.appendChild(card);
+}
+
+// Difficulty selector cards
+function buildDiffCards() {
+  if (!diffRowEl) return;
+  diffRowEl.innerHTML = '';
+  for (const d of DIFFICULTIES) {
+    const card = document.createElement('div');
+    card.className = 'diffCard' + (d.key === setup.difficulty ? ' selected' : '');
+    card.innerHTML = `<b style="color:${d.color}">${d.icon} ${d.label}</b><span>${d.desc}</span>`;
+    card.addEventListener('click', () => {
+      setup.difficulty = d.key;
+      diffRowEl.querySelectorAll('.diffCard').forEach((c) => c.classList.remove('selected'));
+      card.classList.add('selected');
+      saveSetup();
+    });
+    diffRowEl.appendChild(card);
+  }
+}
+buildDiffCards();
 
 // ── Gunsmith screen (extracted to src/ui/gunsmith.js; wires its own buttons) ──
 createGunsmithScreen(setup, () => totalXp);
@@ -129,6 +187,7 @@ transitionEl.addEventListener('click', () => {
 });
 
 document.getElementById('startGameBtn').addEventListener('click', () => {
+  saveSetup();
   const map = MAPS.find((m) => m.id === setup.mapId);
   showTransition(map ? map.name : setup.mapId);
   menuEl.classList.add('hidden');
@@ -149,6 +208,59 @@ let weaponManager = null;
 
 let enemies = [];
 let round = 1;
+
+// Distance-based shadow/light culling: distant props skip the shadow pass
+// and lights beyond their reach are hidden, cutting draw calls + per-fragment
+// light loops. Refreshed on a slow cadence (0.2s), not per frame.
+const perfCull = { shadowCasters: [], pointLights: [], acc: 0 };
+
+function collectPerfCullables() {
+  perfCull.shadowCasters.length = 0;
+  perfCull.pointLights.length = 0;
+  if (!scene) return;
+  const wp = _cullPos2;
+  scene.traverse((o) => {
+    if (o.isMesh && o.castShadow && !o.userData.isEnemy) {
+      o.getWorldPosition(wp);
+      o.userData._cullX = wp.x;
+      o.userData._cullZ = wp.z;
+      perfCull.shadowCasters.push(o);
+    } else if (o.isPointLight) {
+      perfCull.pointLights.push(o);
+    }
+  });
+}
+
+const _cullPos = new THREE.Vector3();
+const _cullPos2 = new THREE.Vector3();
+function updatePerfCulling() {
+  if (!controller) return;
+  const q = qualityByKey(opts.quality);
+  const p = controller.position;
+  _cullPos.set(p.x, 0, p.z);
+  const shadowCutoffSq = q.shadowCutoff * q.shadowCutoff;
+  for (const m of perfCull.shadowCasters) {
+    const dx = (m.userData._cullX ?? m.position.x) - p.x;
+    const dz = (m.userData._cullZ ?? m.position.z) - p.z;
+    m.castShadow = q.shadows && (dx * dx + dz * dz) < shadowCutoffSq;
+  }
+  for (const l of perfCull.pointLights) {
+    l.getWorldPosition(_cullPos2);
+    _cullPos2.y = 0;
+    const range = (l.distance || 20) + 14;
+    l.visible = _cullPos2.distanceToSquared(_cullPos) < range * range;
+  }
+  // Zombies too: distant horde members skip the shadow pass. Re-evaluated
+  // every tick so pooled (recycled) groups never come back shadowless.
+  const enemyCutoffSq = q.enemyShadowCutoff * q.enemyShadowCutoff;
+  for (const e of enemies) {
+    const ep = e.group.position;
+    const dx = ep.x - p.x, dz = ep.z - p.z;
+    const near = q.shadows && (dx * dx + dz * dz) < enemyCutoffSq;
+    const meshes = e._meshes;
+    for (let i = 0; i < meshes.length; i++) meshes[i].castShadow = near;
+  }
+}
 let score = 0;
 let playerHealth = 100;
 // Set on death: freezes the loop until the player clicks "Play Again",
@@ -170,9 +282,16 @@ let interactFn = null;
 let arenaHalf = 45;
 
 // ── Point-buyable map barriers (CoD zombies style): pay score to open a
-// sealed zone; enemies only spawn inside zones that are already unlocked. ──
-const barriers = []; // { mesh, collider, cost, zone, open }
+// sealed zone; enemies only spawn inside zones that are already unlocked.
+// The horde funnels through an opened barrier and slowly tears it back
+// shut — hold the chokepoint or pay to patch it (E). ──
+const barriers = []; // { mesh, collider, cost, zone, open, hp, collapsed }
 const zones = []; // { id, rect: [minX, minZ, maxX, maxZ], unlocked }
+
+// ── Wall guns (point-buy mounts) + the Pack-a-Punch station ──
+const wallGuns = []; // { mesh, weapon, cost, used }
+let papMachine = null; // { mesh, used }
+let difficulty = difficultyByKey('normal');
 
 // ── Wave rhythm: 'prep' (build/heal) then 'active' (fight) ──
 let waveState = 'active';
@@ -206,7 +325,18 @@ const XP_KEY = 'zombieFront.xp';
 const STATS_KEY = 'zombieFront.stats';
 const ATTACH_UNLOCKED = new Set();
 let totalXp = 0;
-let stats = { kills: 0, headshots: 0, bestRound: 0, bestScore: 0 };
+let stats = { kills: 0, headshots: 0, bestRound: 0, bestScore: 0, runs: 0, bestRuns: {} };
+
+/** Record the current run under its map+difficulty record slot. */
+function recordBestRun() {
+  stats.bestRuns = stats.bestRuns || {};
+  const key = `${setup.mapId}:${difficulty.key}`;
+  const cur = stats.bestRuns[key] || { round: 0, score: 0 };
+  stats.bestRuns[key] = {
+    round: Math.max(cur.round, round),
+    score: Math.max(cur.score, score),
+  };
+}
 
 function loadPersisted() {
   try {
@@ -239,14 +369,15 @@ function addXp(n) {
 
 loadPersisted();
 
-// ── Player settings (pause menu): sensitivity / volume / FOV, persisted ──
+// ── Player settings (pause menu): sensitivity / volume / FOV / quality ──
 const OPTS_KEY = 'zombieFront.opts';
-const opts = { sens: 1, volume: 0.5, fov: 75 };
+const opts = { sens: 1, volume: 0.5, fov: 75, quality: 'med' };
 
 function loadOpts() {
   try {
     Object.assign(opts, JSON.parse(localStorage.getItem(OPTS_KEY) || '{}'));
   } catch { /* corrupt data: defaults */ }
+  if (!QUALITY_PRESETS[opts.quality]) opts.quality = 'med';
 }
 
 function saveOpts() {
@@ -267,23 +398,71 @@ function applyOpts() {
   }
 }
 
+let shadowTick = 0;
+/** Pixel ratio, shadow map and sun follow — live-swappable from the pause menu. */
+function applyQuality() {
+  const q = qualityByKey(opts.quality);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, q.pixelRatio));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = q.shadows;
+  renderer.shadowMap.type = q.shadowType === 'pcfsoft' ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
+  renderer.shadowMap.autoUpdate = q.shadows && q.shadowInterval <= 1;
+  if (dayCycle.sun) {
+    dayCycle.sun.castShadow = q.shadows;
+    if (q.shadows) {
+      const sm = dayCycle.sun.shadow;
+      if (sm.mapSize.x !== q.shadowMap) {
+        if (sm.map) {
+          sm.map.dispose();
+          sm.map = null;
+        }
+        sm.mapSize.set(q.shadowMap, q.shadowMap);
+      }
+    }
+  }
+  if (scene && controller) updatePerfCulling();
+}
+
+function applyShadowCadence() {
+  const q = qualityByKey(opts.quality);
+  if (!q.shadows) {
+    renderer.shadowMap.autoUpdate = false;
+    renderer.shadowMap.needsUpdate = false;
+    return;
+  }
+  if (q.shadowInterval <= 1) {
+    renderer.shadowMap.autoUpdate = true;
+    return;
+  }
+  renderer.shadowMap.autoUpdate = false;
+  renderer.shadowMap.needsUpdate = (++shadowTick % q.shadowInterval) === 0;
+}
+
+function updateSunFollow() {
+  const sun = dayCycle.sun;
+  if (!sun || !sun.castShadow) return;
+  const q = qualityByKey(opts.quality);
+  const p = controller.position;
+  sun.position.set(p.x + 28, 48, p.z + 12);
+  sun.target.position.set(p.x, 0, p.z);
+  sun.target.updateMatrixWorld();
+  const cam = sun.shadow.camera;
+  const h = q.shadowFollow;
+  if (cam.right !== h) {
+    cam.left = -h;
+    cam.right = h;
+    cam.top = h;
+    cam.bottom = -h;
+    cam.updateProjectionMatrix();
+  }
+}
+
 loadOpts();
+applyQuality();
 
 /** True if a ground position is inside any static obstacle (buildings, rubble...). */
 function isBlocked(x, z) {
-  for (const obs of controller.obstacles) {
-    const col = obs.userData.collision;
-    if (!col) continue;
-    const half = col.size.clone().multiplyScalar(0.5);
-    if (
-      Math.abs(x - obs.position.x) < half.x + 0.5 &&
-      Math.abs(z - obs.position.z) < half.z + 0.5 &&
-      col.size.y > 0.8 // low rubble is walkable, skip it
-    ) {
-      return true;
-    }
-  }
-  return false;
+  return isBlockedAt(x, z, controller.obstacles, 0.5, 0.8);
 }
 
 /** Find a spawn point: inside an UNLOCKED zone (never through a barrier),
@@ -322,7 +501,7 @@ function spawnWave() {
           : `Wave ${round}`
   );
   const count = waveCount(round);
-  const { hp, spd, dmg } = waveParams(round);
+  const { hp, spd, dmg } = applyDifficulty(waveParams(round), difficulty);
   for (let i = 0; i < count; i++) {
     const pos = findSpawnPos();
     // Type mix gets nastier with the round (pure sprinters on sprint rounds,
@@ -337,6 +516,7 @@ function spawnWave() {
       damage: dmg,
       obstacles: controller.obstacles,
       sandbags,
+      barriers,
       getPeers: () => enemies,
     });
     enemies.push(enemy);
@@ -351,6 +531,7 @@ function spawnWave() {
         damage: dmg,
         obstacles: controller.obstacles,
         sandbags,
+        barriers,
         getPeers: () => enemies,
       });
       enemies.push(enemy);
@@ -372,9 +553,12 @@ function spawnPerkMachines() {
       const z = Math.sin(a) * r;
       if (Math.abs(x) > arenaHalf - 2 || Math.abs(z) > arenaHalf - 2) continue;
       if (isBlocked(x, z)) continue;
-      // Keep off the mystery box (0,0) and the wall-Thompson spot (5,-11).
+      // Keep off the mystery box (0,0), the wall-Thompson spot (5,-11) and
+      // every wall-gun / Pack-a-Punch mount placed before this loop.
       if (x * x + z * z < 9) continue;
       if ((x - 5) ** 2 + (z + 11) ** 2 < 9) continue;
+      if (papMachine && (papMachine.mesh.position.x - x) ** 2 + (papMachine.mesh.position.z - z) ** 2 < 12) continue;
+      if (wallGuns.some((g) => (g.mesh.position.x - x) ** 2 + (g.mesh.position.z - z) ** 2 < 8)) continue;
       if (spots.some(([sx, sz]) => (sx - x) ** 2 + (sz - z) ** 2 < 16)) continue;
       const mesh = createPerkMachine(perk.label, perk.cost, perk.color);
       mesh.position.set(x, 0, z);
@@ -388,6 +572,59 @@ function spawnPerkMachines() {
   }
   if (machines.length) {
     showToast(`${machines.length} perk makinesi haritada — yaklaşıp E bas`);
+  }
+}
+
+/**
+ * Mount the three wall guns FLUSH on real wall faces and place the
+ * Pack-a-Punch station on open ground in the core zone (pure solvers in
+ * game/zombies.js). Each mount offers a different weapon for points; the
+ * PaP upgrades the ACTIVE gun once per run.
+ */
+function spawnSpecialMachines() {
+  const spots = machineSpots({ zones, isBlocked, spin: (stats.runs || 0) * 0.7 });
+  const names = WEAPON_DEFS.map((d) => d.name);
+  const trio = wallGunNames(names, stats.runs || 0);
+
+  // Wall guns: hug building/perimeter walls, front facing the walkable side.
+  const solids = [];
+  for (const o of controller.obstacles) {
+    const col = o.userData.collision;
+    if (col) solids.push({ x: o.position.x, z: o.position.z, sx: col.size.x, sy: col.size.y, sz: col.size.z });
+  }
+  const mounts = wallGunSpots(solids, {
+    isBlocked,
+    zoneRects: zones.filter((z) => z.unlocked).map((z) => z.rect),
+    arenaHalf,
+    keepOut: [[0, 0, 4], [5, -11, 4], ...(spots.pap ? [[spots.pap[0], spots.pap[1], 6]] : [])],
+  });
+  // Fallback: on maps with few usable wall faces, top the trio up with
+  // free-standing floor mounts (facing the map center).
+  for (const [wx, wz] of spots.walls) {
+    if (mounts.length >= trio.length) break;
+    mounts.push({ x: wx, z: wz, rotY: Math.atan2(-wx, -wz) });
+  }
+  mounts.forEach((m, i) => {
+    const weapon = trio[i % trio.length];
+    const cost = wallGunCost(i);
+    const label = WEAPON_LABELS[weapon] || weapon;
+    const mesh = createWallGun(label, cost);
+    mesh.position.set(m.x, 0, m.z);
+    mesh.rotation.y = m.rotY; // flush on the wall, front off the face
+    scene.add(mesh);
+    wallGuns.push({ mesh, weapon, cost, used: false });
+  });
+  if (spots.pap) {
+    const [x, z] = spots.pap;
+    const mesh = createPapMachine(PAP_COST);
+    mesh.position.set(x, 0, z);
+    mesh.rotation.y = Math.atan2(-x, -z);
+    scene.add(mesh);
+    controller.obstacles.push(mesh);
+    papMachine = { mesh, used: false };
+  }
+  if (wallGuns.length || papMachine) {
+    showToast('🔫 Duvarda silahlar + PACK-A-PUNCH haritada — E ile kullan');
   }
 }
 
@@ -411,8 +648,11 @@ function startPrep(seconds) {
   waveState = 'prep';
   prepTimer = seconds;
   sandbagStock = 4;
-  if (weaponManager) weaponManager.noisemakers = 2;
-  showToast(`Hazırlık: ${seconds} sn — B kum torbası, G ses bombası`);
+  if (weaponManager) {
+    weaponManager.noisemakers = 2;
+    weaponManager.grenadesReady = Math.max(weaponManager.grenadesReady, 1);
+  }
+  showToast(`Hazırlık: ${seconds} sn — B kum torbası · G ses bombası · H el bombası`);
   updateHUD();
 }
 
@@ -456,8 +696,8 @@ const POWERUP_TYPES = [
 ];
 
 function addScore(base) {
-  const mult = performance.now() < doublePointsUntil ? 2 : 1;
-  score += base * mult;
+  const mult = (performance.now() < doublePointsUntil ? 2 : 1) * difficulty.scoreMul;
+  score += Math.round(base * mult);
   updateHUD();
 }
 
@@ -515,6 +755,7 @@ function applyPowerUp(key) {
     if (enemies.length === 0 && waveState === 'active') {
       showToast('Wave Cleared');
       if (round > stats.bestRound) stats.bestRound = round;
+      recordBestRun();
       savePersisted();
       round++;
       startPrep(8);
@@ -530,9 +771,9 @@ function applyPowerUp(key) {
 // ── Explosion FX (bomber detonation): expanding additive orb ──
 const fxList = [];
 
-function spawnExplosion(pos) {
+function spawnExplosion(pos, playSound = true) {
   if (!scene) return;
-  weaponManager.sfx.explosion();
+  if (playSound) weaponManager.sfx.explosion();
   const mat = new THREE.MeshBasicMaterial({
     color: 0xff9944,
     transparent: true,
@@ -562,6 +803,24 @@ function updateFx(dt) {
   }
 }
 
+// ── Directional audio helper: stereo pan (-1..1) of a world point relative
+// to the camera's facing. Zombies groan from the side / behind they're on. ──
+const _fwdV = new THREE.Vector3();
+const _toV = new THREE.Vector3();
+
+function audioPan(worldPos) {
+  camera.getWorldDirection(_fwdV);
+  _fwdV.y = 0;
+  if (_fwdV.lengthSq() < 1e-6) return 0;
+  _fwdV.normalize();
+  _toV.copy(worldPos).sub(camera.position);
+  _toV.y = 0;
+  if (_toV.lengthSq() < 1e-6) return 0;
+  _toV.normalize();
+  // Camera right in world XZ = (-fwd.z, fwd.x)
+  return THREE.MathUtils.clamp(_toV.x * -_fwdV.z + _toV.z * _fwdV.x, -1, 1);
+}
+
 /** Show a short-lived toast notification (e.g. "Wave Cleared", "MAX Picked"). */
 function showToast(text) {
   if (!toastsEl) return;
@@ -579,13 +838,87 @@ function updateHUD() {
   if (hudHealth) hudHealth.textContent = String(Math.max(0, playerHealth));
   if (hudRound) hudRound.textContent = String(round);
   if (hudGear && weaponManager) {
-    hudGear.textContent = `💣 ${weaponManager.noisemakers}  🧱 ${sandbagStock}  [G/B]`;
+    hudGear.textContent = `💣 ${weaponManager.noisemakers}  🧱 ${sandbagStock}  🧨 ${weaponManager.grenadesReady}  [G/B/H]`;
   }
   if (hudPerks) {
     const owned = PERKS.filter((p) => perksHeld[p.key]);
     hudPerks.textContent = owned.length
       ? owned.map((p) => `${p.icon} ${p.label}`).join('  ·  ')
       : '';
+  }
+}
+
+// ── Buff countdown strip (insta-kill / double points / difficulty tag) ──
+function updateBuffs(now) {
+  if (!hudBuffs) return;
+  const parts = [];
+  if (difficulty.scoreMul > 1) parts.push(`${difficulty.icon} ${difficulty.label} x${difficulty.scoreMul}`);
+  if (now < instaKillUntil) parts.push(`☠ INSTA-KILL ${Math.ceil((instaKillUntil - now) / 1000)}s`);
+  if (now < doublePointsUntil) parts.push(`✕2 PUAN ${Math.ceil((doublePointsUntil - now) / 1000)}s`);
+  const txt = parts.join('   ·   ');
+  if (hudBuffs.textContent !== txt) hudBuffs.textContent = txt;
+}
+
+// ── Compass strip: world cardinals + live POI markers (box, PaP, walls,
+// breached barriers) projected by bearing onto a flat ±100° ribbon. ──
+const COMPASS_SPAN = (100 * Math.PI) / 180;
+const CARDINALS = [[0, 'K'], [Math.PI / 2, 'D'], [Math.PI, 'G'], [-Math.PI / 2, 'B']];
+
+function drawCompass() {
+  if (!compassCtx || !controller) return;
+  const w = compassEl.width;
+  const h = compassEl.height;
+  const ctx = compassCtx;
+  ctx.clearRect(0, 0, w, h);
+
+  camera.getWorldDirection(_fwdV);
+  _fwdV.y = 0;
+  if (_fwdV.lengthSq() < 1e-6) return;
+  _fwdV.normalize();
+  const rx = -_fwdV.z;
+  const rz = _fwdV.x;
+  const heading = Math.atan2(_fwdV.x, -_fwdV.z); // 0 = world north (-Z)
+
+  // Cardinal ticks
+  ctx.font = 'bold 13px monospace';
+  ctx.textAlign = 'center';
+  for (const [a, label] of CARDINALS) {
+    let d = a - heading;
+    d = Math.atan2(Math.sin(d), Math.cos(d));
+    if (Math.abs(d) > COMPASS_SPAN) continue;
+    ctx.fillStyle = label === 'K' ? '#ef5350' : '#cfc9b5';
+    ctx.fillText(label, w / 2 + (d / COMPASS_SPAN) * (w / 2), 14);
+  }
+
+  // POI dots
+  const pois = [];
+  if (mysteryBox) pois.push([mysteryBox.position.x, mysteryBox.position.z, '#ffee58', '?']);
+  if (papMachine && !papMachine.used) {
+    pois.push([papMachine.mesh.position.x, papMachine.mesh.position.z, '#ce93d8', 'P']);
+  }
+  for (const g of wallGuns) {
+    if (!g.used) pois.push([g.mesh.position.x, g.mesh.position.z, '#90caf9', 'G']);
+  }
+  for (const b of barriers) {
+    if (b.open && !b.collapsed && barrierNeedsRepair(b.hp)) {
+      pois.push([b.mesh.position.x, b.mesh.position.z, '#ff8a65', '!']);
+    }
+  }
+  ctx.font = 'bold 11px monospace';
+  for (const [px, pz, col, label] of pois) {
+    const dx = px - controller.position.x;
+    const dz = pz - controller.position.z;
+    const len = Math.hypot(dx, dz);
+    if (len < 0.1) continue;
+    const ang = Math.atan2((dx * rx + dz * rz) / len, (dx * _fwdV.x + dz * _fwdV.z) / len);
+    if (Math.abs(ang) > COMPASS_SPAN) continue;
+    const x = w / 2 + (ang / COMPASS_SPAN) * (w / 2);
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    ctx.arc(x, h - 10, 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#141410';
+    ctx.fillText(label, x, h - 6);
   }
 }
 
@@ -598,12 +931,16 @@ function buildGame() {
 
   // Zones & barriers: gated zones stay locked (and spawn-inert) until bought.
   barriers.length = 0;
-  for (const b of built.barriers || []) barriers.push({ ...b, open: false });
+  for (const b of built.barriers || []) barriers.push({ ...b, open: false, hp: BARRIER_HP, collapsed: false });
   zones.length = 0;
   for (const z of built.zones || []) zones.push({ id: z.id, rect: z.rect, unlocked: !z.gate });
   if (!zones.some((z) => z.unlocked)) {
     zones.unshift({ id: 'main', rect: [-arenaHalf, -arenaHalf, arenaHalf, arenaHalf], unlocked: true });
   }
+
+  difficulty = difficultyByKey(setup.difficulty);
+  wallGuns.length = 0;
+  papMachine = null;
 
   controller = new FPSController(camera, scene, null, canvas, {
     speed: 6,
@@ -642,6 +979,8 @@ function buildGame() {
       else if (enemy.type === 'boss') spawnPowerUp(enemy.group.position, 'MaxAmmo');
       else if (Math.random() < 0.25) spawnPowerUp(enemy.group.position);
     },
+    // Grenade throw / detonation: refresh the gear readout right away.
+    onAmmoChange: () => updateHUD(),
     // Reserve ran dry — point the player at ammo crates / MAX pickups.
     onOutOfAmmo: () => {
       gamepad.rumble(0.3, 0.8, 120);
@@ -657,6 +996,35 @@ function buildGame() {
         }
       }
       if (lured > 0) showToast(`${lured} zombi sesi duydu!`);
+    },
+    // Frag grenade detonated: AoE kill pass over the horde + self damage.
+    onGrenade: (pos) => {
+      spawnExplosion(pos, false); // explosion SFX already played by the thrower
+      gamepad.rumble(1, 0.8, 320);
+      let kills = 0;
+      for (const e of enemies) {
+        if (!e.alive || e.dying) continue;
+        if (e.group.position.distanceTo(pos) < 5 && e.applyExplosion(pos, 5, 8)) {
+          kills++;
+          stats.kills++;
+          addXp(5);
+        }
+      }
+      if (kills) {
+        addScore(60 * kills);
+        showToast(`💣 ${kills} zombi paramparça!`);
+      }
+      weaponManager.setTargets(enemies.filter((e) => e.alive && !e.dying).map((e) => e.group));
+      const selfD = pos.distanceTo(controller.position);
+      if (selfD < 4) {
+        const selfDmg = Math.max(1, Math.round(20 * (1 - selfD / 4)));
+        playerHealth = Math.max(1, playerHealth - selfDmg);
+        controller.addHitFlinch();
+        weaponManager.sfx.playerHurt();
+        gamepad.rumble(0.7, 1, 200);
+        showToast('💣 Kendi bombası!');
+        updateHUD();
+      }
     },
   }, setup.attachments, setup.skins, setup.loadout);
   weaponManager.hipFov = opts.fov;
@@ -734,17 +1102,74 @@ function buildGame() {
       showToast(`${m.perk.icon} ${m.perk.label} — ${m.perk.hint}`);
       return;
     }
-    // Map barriers: pay points to tear down and open the sealed zone.
+    // Pack-a-Punch: upgrade the ACTIVE weapon once per run.
+    if (papMachine && !papMachine.used
+        && papMachine.mesh.position.distanceTo(controller.position) < 2.8) {
+      const baseName = weaponManager.activeDef.name;
+      if (weaponManager.papHeld.has(baseName)) {
+        showToast('Bu silah zaten PACK-A-PUNCH — başka silahla gel');
+        return;
+      }
+      if (score < PAP_COST) {
+        showToast(`Puan yetmez — Pack-a-Punch: ${PAP_COST} puan`);
+        return;
+      }
+      const upgraded = weaponManager.packAPunch();
+      if (!upgraded) {
+        showToast('Silah şu an yükseltilemiyor (şarjör/swap bekleyin)');
+        return;
+      }
+      score -= PAP_COST;
+      papMachine.used = true;
+      retintLabelSign(papMachine.mesh.userData.sign, 'PACK-A-PUNCH', 'KULLANILDI');
+      weaponManager.sfx.powerUp();
+      gamepad.rumble(1, 1, 450);
+      const def = WEAPON_DEFS.find((d) => d.name === upgraded);
+      showToast(`⚡ PACK-A-PUNCH! ${def ? papLabel(def) : upgraded}`);
+      addXp(50);
+      updateHUD();
+      return;
+    }
+    // Damaged (opened) barriers: patch them back before the horde rips them shut.
     for (const b of barriers) {
-      if (b.open) continue;
+      if (!b.open || b.collapsed || !barrierNeedsRepair(b.hp)) continue;
+      if (b.mesh.position.distanceTo(controller.position) > 2.8) continue;
+      if (score < BARRIER_REPAIR_COST) {
+        showToast(`Puan yetmez — barikat tamiri: ${BARRIER_REPAIR_COST} puan`);
+        return;
+      }
+      score -= BARRIER_REPAIR_COST;
+      b.hp = BARRIER_HP;
+      weaponManager.sfx.clatter(false);
+      weaponManager.sfx.powerUp();
+      showToast(`🔧 Barikat onarıldı (−${BARRIER_REPAIR_COST})`);
+      updateHUD();
+      return;
+    }
+    // Map barriers: pay points to tear down and open the sealed zone.
+    // A torn-down (auto-resealed) barrier can be bought again to clear the
+    // rubble path — otherwise zombies stuck behind it could never be killed.
+    for (const b of barriers) {
+      if (b.open && !b.collapsed) continue;
       if (b.mesh.position.distanceTo(controller.position) > 2.8) continue;
       if (score < b.cost) {
         showToast(`Puan yetmez — barikat: ${b.cost} puan`);
         return;
       }
+      const wasCollapsed = b.collapsed;
       score -= b.cost;
       b.open = true;
-      scene.remove(b.mesh);
+      b.collapsed = false;
+      b.hp = BARRIER_HP;
+      if (wasCollapsed) {
+        scene.remove(b.mesh); // rubble path cleared (mesh already torn down)
+      } else {
+        // Knocked-down look: the frame stays as a low barrier the horde
+        // will chew back down — its height reads the remaining HP.
+        b.mesh.scale.y = 0.35;
+        const lockSign = b.mesh.children.find((c) => c.isSprite);
+        if (lockSign) lockSign.visible = false;
+      }
       const oi = controller.obstacles.indexOf(b.collider);
       if (oi !== -1) controller.obstacles.splice(oi, 1);
       const zn = zones.find((z) => z.id === b.zone);
@@ -752,7 +1177,30 @@ function buildGame() {
       weaponManager.sfx.clatter(true);
       weaponManager.sfx.powerUp();
       gamepad.rumble(0.5, 0.7, 160);
-      showToast(`🪵 Barikat kaldırıldı! Yeni bölge açıldı (−${b.cost})`);
+      showToast(wasCollapsed
+        ? `🧹 Geçit yeniden açıldı (−${b.cost})`
+        : `🪵 Barikat kaldırıldı! Yeni bölge açıldı (−${b.cost})`);
+      updateHUD();
+      return;
+    }
+    // Wall-gun mounts: pay points, the gun replaces your active slot.
+    for (const g of wallGuns) {
+      if (g.used) continue;
+      if (g.mesh.position.distanceTo(controller.position) > 2.3) continue;
+      const label = WEAPON_LABELS[g.weapon] || g.weapon;
+      if (score < g.cost) {
+        showToast(`Puan yetmez — ${label}: ${g.cost} puan`);
+        return;
+      }
+      score -= g.cost;
+      g.used = true;
+      g.mesh.userData.glowMat.emissiveIntensity = 0.05;
+      g.mesh.userData.glowMat.color.setHex(0x3a3d40);
+      retintLabelSign(g.mesh.userData.sign, label, 'SOLD');
+      const granted = weaponManager.grantWeapon(g.weapon);
+      weaponManager.sfx.powerUp();
+      gamepad.rumble(0.5, 0.8, 160);
+      showToast(granted ? `🔫 DUVARDAN: ${label}!` : `${label} zaten sende — mermi ikmali!`);
       updateHUD();
       return;
     }
@@ -796,6 +1244,8 @@ function buildGame() {
 
   // Reset run state
   pendingRestart = false;
+  stats.runs = (stats.runs || 0) + 1;
+  savePersisted();
   enemies = [];
   round = 1;
   score = 0;
@@ -815,8 +1265,13 @@ function buildGame() {
   dayCycle.hemiBase = dayCycle.hemi ? dayCycle.hemi.intensity : 0;
   dayCycle.ambBase = dayCycle.ambient ? dayCycle.ambient.intensity : 0;
 
-  // Perk machines scattered on open ground (works on every map).
+  // Wall-gun mounts + the Pack-a-Punch station first, then perk machines
+  // scattered around them (the perk spots avoid every special machine).
+  spawnSpecialMachines();
   spawnPerkMachines();
+  collectPerfCullables();
+  applyQuality();
+  if (dayCycle.sun && !dayCycle.sun.target.parent) scene.add(dayCycle.sun.target);
 
   // Prep phase before wave 1: build sandbags, then the front line arrives.
   startPrep(5);
@@ -857,9 +1312,11 @@ function teardownGame() {
   }
   fxList.length = 0;
   machines.length = 0; // meshes die with the old scene
-  for (const b of barriers) if (!b.open) scene.remove(b.mesh);
+  for (const b of barriers) if (!b.collapsed) scene.remove(b.mesh);
   barriers.length = 0;
   zones.length = 0;
+  wallGuns.length = 0;
+  papMachine = null;
 
   scene = null;
   controller = null;
@@ -871,6 +1328,8 @@ function teardownGame() {
   const crossEl = document.getElementById('crosshair');
   if (crossEl) crossEl.style.display = '';
   if (hudPrep) hudPrep.textContent = '';
+  if (hudBuffs) hudBuffs.textContent = '';
+  if (compassCtx) compassCtx.clearRect(0, 0, compassEl.width, compassEl.height);
   overlay.classList.add('hidden');
   if (document.pointerLockElement) document.exitPointerLock();
 }
@@ -916,17 +1375,41 @@ function updateMenuMeta() {
   if (xpLineEl) {
     xpLineEl.textContent = `⭐ ${totalXp} XP — aksesuarlar XP ile açılır (kill: 10 · headshot: 15 · dalga: 20×N)`;
   }
+  // Per-map record line: best round across difficulties (with the mode tag).
+  for (const map of MAPS) {
+    const el = document.getElementById(`rec-${map.id}`);
+    if (!el) continue;
+    const entries = Object.entries(stats.bestRuns || {}).filter(([k]) => k.startsWith(`${map.id}:`));
+    if (!entries.length) {
+      el.textContent = 'Henüz kayıt yok';
+      continue;
+    }
+    let best = { round: 0, score: 0, key: '' };
+    for (const [k, v] of entries) {
+      if (v.round > best.round) best = { ...v, key: k.split(':')[1] };
+    }
+    const diff = difficultyByKey(best.key);
+    el.textContent = `🏆 Rekor: ${best.round}. tur · ${best.score} puan (${diff.label})`;
+  }
 }
 
 function showStats() {
   if (!statsBodyEl || !statsScreenEl) return;
   const hsPct = stats.kills ? Math.round((stats.headshots / stats.kills) * 100) : 0;
+  const runRows = Object.entries(stats.bestRuns || {}).map(([k, v]) => {
+    const [mapId, dKey] = k.split(':');
+    const map = MAPS.find((m) => m.id === mapId);
+    const diff = difficultyByKey(dKey);
+    return `<div class="statRow"><span>${map ? map.name : mapId} · ${diff.icon} ${diff.label}</span><b>${v.round}. tur · ${v.score} p</b></div>`;
+  }).join('');
   statsBodyEl.innerHTML = `
     <div class="statRow"><span>Toplam Kill</span><b>${stats.kills}</b></div>
     <div class="statRow"><span>Headshot</span><b>${stats.headshots} (%${hsPct})</b></div>
     <div class="statRow"><span>En İyi Tur</span><b>${stats.bestRound}</b></div>
     <div class="statRow"><span>En Yüksek Skor</span><b>${stats.bestScore}</b></div>
-    <div class="statRow"><span>Toplam XP</span><b>${totalXp}</b></div>`;
+    <div class="statRow"><span>Toplam XP</span><b>${totalXp}</b></div>
+    <div class="statRow"><span>Toplam Koşu</span><b>${stats.runs || 0}</b></div>
+    ${runRows}`;
   statsScreenEl.classList.remove('hidden');
 }
 
@@ -938,7 +1421,7 @@ document.getElementById('statsCloseBtn')?.addEventListener('click', () => {
   statsScreenEl.classList.add('hidden');
 });
 document.getElementById('statsResetBtn')?.addEventListener('click', () => {
-  stats = { kills: 0, headshots: 0, bestRound: 0, bestScore: 0 };
+  stats = { kills: 0, headshots: 0, bestRound: 0, bestScore: 0, runs: 0, bestRuns: {} };
   totalXp = 0;
   ATTACH_UNLOCKED.clear();
   for (const [key, meta] of Object.entries(ATTACHMENTS)) {
@@ -957,6 +1440,8 @@ const optFovEl = document.getElementById('optFov');
 const optSensVal = document.getElementById('optSensVal');
 const optVolVal = document.getElementById('optVolVal');
 const optFovVal = document.getElementById('optFovVal');
+const optQualityEl = document.getElementById('optQuality');
+const optQualityVal = document.getElementById('optQualityVal');
 
 function syncPauseOptions() {
   if (!pausePanel) return;
@@ -966,12 +1451,27 @@ function syncPauseOptions() {
   optSensVal.textContent = `${Math.round(opts.sens * 100)}%`;
   optVolVal.textContent = `${Math.round(opts.volume * 100)}%`;
   optFovVal.textContent = `${Math.round(opts.fov)}°`;
+  const q = qualityByKey(opts.quality);
+  if (optQualityVal) optQualityVal.textContent = q.label;
+  if (optQualityEl) {
+    optQualityEl.querySelectorAll('.qualBtn').forEach((btn) => {
+      btn.classList.toggle('selected', btn.dataset.quality === q.key);
+    });
+  }
 }
 
 if (pausePanel) {
   optSensEl.addEventListener('input', () => { opts.sens = Number(optSensEl.value); applyOpts(); syncPauseOptions(); saveOpts(); });
   optVolEl.addEventListener('input', () => { opts.volume = Number(optVolEl.value); applyOpts(); syncPauseOptions(); saveOpts(); });
   optFovEl.addEventListener('input', () => { opts.fov = Number(optFovEl.value); applyOpts(); syncPauseOptions(); saveOpts(); });
+  optQualityEl?.addEventListener('click', (e) => {
+    const btn = e.target.closest('.qualBtn');
+    if (!btn || !QUALITY_PRESETS[btn.dataset.quality]) return;
+    opts.quality = btn.dataset.quality;
+    applyQuality();
+    syncPauseOptions();
+    saveOpts();
+  });
 }
 syncPauseOptions();
 
@@ -1002,10 +1502,14 @@ document.addEventListener('pointerlockchange', () => {
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
+  const q = qualityByKey(opts.quality);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, q.pixelRatio));
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
 // --- Main loop ---
+/** Headless-test mode: keep ticking without pointer lock (?fpzDebug=1). */
+const DEBUG_UNPAUSED = /[?&]fpzDebug/.test(location.search) || !!window.__fpzDebug;
 const gamepad = new GamepadInput();
 const menuNav = new GamepadMenuNav(gamepad);
 const clock = new THREE.Clock();
@@ -1024,6 +1528,8 @@ window.addEventListener('gamepaddisconnected', () => {
 
 /** Two-pass render: world (layer 0), then viewmodel over a cleared depth. */
 function renderWorld() {
+  // Accumulate stats across both passes (renderer.info resets per render()).
+  renderer.info.reset();
   camera.layers.set(0);
   renderer.render(scene, camera);
   // The gun must never be occluded by / embedded into walls, so the
@@ -1041,6 +1547,12 @@ function renderWorld() {
 function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.05);
+
+  perfCull.acc += dt;
+  if (perfCull.acc >= 0.2) {
+    perfCull.acc = 0;
+    updatePerfCulling();
+  }
 
   // Menu is up: nothing to render (the menu's CSS background shows) —
   // but the menus themselves are gamepad-navigable.
@@ -1065,8 +1577,9 @@ function animate() {
   });
 
   // True pause: pause overlay is up (pointer released) with a live run —
-  // show the frozen world but tick nothing.
-  if (document.pointerLockElement !== canvas && !pendingRestart) {
+  // show the frozen world but tick nothing. Debug runs (?fpzDebug=1) skip
+  // the freeze so the loop runs headlessly without a pointer lock.
+  if (document.pointerLockElement !== canvas && !pendingRestart && !DEBUG_UNPAUSED) {
     renderWorld();
     return;
   }
@@ -1074,13 +1587,18 @@ function animate() {
   controller.update(dt);
   weaponManager.update(dt);
   updateFx(dt);
+  applyShadowCadence();
+  updateSunFollow();
 
   // Flickering bunker lamps (base intensity ~14; flicker around 60-110%)
   for (const pl of flickerLights) {
+    if (!pl.visible) continue;
     pl.intensity = 14 * (0.6 + Math.random() * 0.5 + Math.sin(performance.now() * 0.01 + pl.userData.flickerSeed) * 0.15);
   }
 
   const now = performance.now();
+  drawCompass();
+  updateBuffs(now);
   for (let i = powerUps.length - 1; i >= 0; i--) {
     const p = powerUps[i];
     p.rotation.y += dt * 2;
@@ -1110,6 +1628,22 @@ function animate() {
     }
   }
 
+  // Opened barriers the horde has torn back shut: reseal the zone.
+  // The knocked-down frame visibly sags as its HP drains.
+  for (const b of barriers) {
+    if (!b.open || b.collapsed) continue;
+    b.mesh.scale.y = 0.35 * THREE.MathUtils.clamp(b.hp / BARRIER_HP, 0.2, 1);
+    if (b.hp > 0) continue;
+    b.collapsed = true;
+    scene.remove(b.mesh);
+    controller.obstacles.push(b.collider);
+    const zn = zones.find((z) => z.id === b.zone);
+    if (zn) zn.unlocked = false;
+    weaponManager.sfx.clatter(true);
+    gamepad.rumble(0.8, 1, 300);
+    showToast('⚠ Barikat yırtıldı! Bölge yeniden mühürlendi');
+  }
+
   // Sandbags the zombies have chewed through collapse.
   for (let i = sandbags.length - 1; i >= 0; i--) {
     const bag = sandbags[i];
@@ -1136,8 +1670,9 @@ function animate() {
     }
     if (nearest) {
       const vol = THREE.MathUtils.clamp(0.35 * (1 - nearD / 22), 0.05, 0.35);
-      if (nearest.type === 'headcrab') weaponManager.sfx.headcrabChirp(vol);
-      else weaponManager.sfx.zombieGrowl(vol);
+      const pan = audioPan(nearest.group.position);
+      if (nearest.type === 'headcrab') weaponManager.sfx.headcrabChirp(vol, pan);
+      else weaponManager.sfx.zombieGrowl(vol, pan);
     }
   }
 
@@ -1158,6 +1693,8 @@ function animate() {
     beatTimer = 0;
   }
 
+  if (enemies.length) Enemy.prepareFrame(enemies, controller.obstacles);
+
   for (let i = enemies.length - 1; i >= 0; i--) {
     const enemy = enemies[i];
     if (enemy.dying) {
@@ -1175,6 +1712,7 @@ function animate() {
           gamepad.rumble(0.5, 0.8, 250);
           addXp(20 * round);
           if (round > stats.bestRound) stats.bestRound = round;
+          recordBestRun();
           savePersisted();
           round++;
           updateHUD();
@@ -1224,6 +1762,7 @@ function animate() {
           pendingRestart = true;
           if (score > stats.bestScore) stats.bestScore = score;
           if (round > stats.bestRound) stats.bestRound = round;
+          recordBestRun();
           savePersisted();
           for (const e of enemies) e.release();
           enemies = [];
@@ -1241,6 +1780,112 @@ function animate() {
   }
 
   renderWorld();
+  updatePerfHud(dt);
+}
+
+// ── Perf HUD (F3): fps + draw calls + triangles + live light/shadow counts ──
+const perfHud = {
+  el: null, on: /[?&]fpzPerf/.test(location.search), acc: 0, frames: 0, fps: 0,
+};
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'F3') {
+    e.preventDefault();
+    if (e.shiftKey && scene) dumpSceneBreakdown();
+    else {
+      perfHud.on = !perfHud.on;
+      if (perfHud.el) perfHud.el.style.display = perfHud.on ? 'block' : 'none';
+    }
+  }
+});
+/** Shift+F3: console breakdown of visible meshes per top-level scene child. */
+function dumpSceneBreakdown() {
+  camera.layers.set(0); // renderWorld leaves layers=1 (viewmodel pass)
+  scene.updateMatrixWorld(true);
+  camera.updateMatrixWorld();
+  const fr = new THREE.Frustum();
+  fr.setFromProjectionMatrix(
+    new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
+  );
+  const rows = [];
+  let enemyVis = 0;
+  for (const child of scene.children) {
+    let vis = 0, tot = 0;
+    child.traverse((o) => {
+      if (!o.isMesh) return;
+      tot++;
+      if (o.visible && o.layers.test(camera.layers) && fr.intersectsObject(o)) vis++;
+    });
+    if (!tot) continue;
+    if (child.userData.isEnemy) enemyVis += vis;
+    rows.push({ obj: child.name || `${child.type}#${child.id}`, meshes: tot, visible: vis });
+  }
+  rows.sort((a, b) => b.visible - a.visible);
+  const visible = rows.reduce((s, r) => s + r.visible, 0);
+  console.log(`%c[fpz perf] ~${visible} visible meshes (×2 shadow/world pass ≈ draw calls), enemies: ${enemyVis}`, 'color:#8f8;font-weight:bold');
+  console.table(rows.slice(0, 25));
+}
+function updatePerfHud(dt) {
+  if (!perfHud.on) return;
+  perfHud.acc += dt;
+  perfHud.frames++;
+  if (perfHud.acc >= 0.5) {
+    perfHud.fps = Math.round(perfHud.frames / perfHud.acc);
+    perfHud.acc = 0;
+    perfHud.frames = 0;
+    if (!perfHud.el) {
+      perfHud.el = document.createElement('div');
+      perfHud.el.style.cssText =
+        'position:fixed;top:8px;left:8px;z-index:9999;padding:6px 10px;' +
+        'background:rgba(0,0,0,.65);color:#8f8;font:12px/1.5 monospace;' +
+        'pointer-events:none;white-space:pre;border-radius:4px';
+      document.body.appendChild(perfHud.el);
+    }
+    const info = renderer.info.render;
+    const visLights = perfCull.pointLights.filter((l) => l.visible).length;
+    const visShadowCasters = perfCull.shadowCasters.filter((m) => m.castShadow).length;
+    perfHud.el.textContent =
+      `FPS ${perfHud.fps}\n` +
+      `draw calls ${info.calls}  tris ${info.triangles}\n` +
+      `lights ${visLights}/${perfCull.pointLights.length}  shadowMESH ${visShadowCasters}/${perfCull.shadowCasters.length}\n` +
+      `enemies ${enemies.length}  gfx ${qualityByKey(opts.quality).label}`;
+  }
 }
 
 animate();
+
+// Debug/test hook: read-only view of the live run (also handy in the
+// browser console). Never written to from gameplay code.
+window.__fpz = {
+  get state() {
+    return {
+      scene: !!scene,
+      round,
+      score,
+      health: playerHealth,
+      enemies: enemies.length,
+      alive: enemies.filter((e) => e.alive && !e.dying).length,
+      barriers: barriers.map((b) => ({ zone: b.zone, open: b.open, hp: Math.round(b.hp), collapsed: !!b.collapsed, x: b.mesh.position.x, z: b.mesh.position.z })),
+      wallGuns: wallGuns.map((g) => ({ weapon: g.weapon, used: g.used, x: g.mesh.position.x, z: g.mesh.position.z })),
+      pap: papMachine ? { used: papMachine.used, x: papMachine.mesh.position.x, z: papMachine.mesh.position.z } : null,
+      papHeld: weaponManager ? [...weaponManager.papHeld] : [],
+      grenadesReady: weaponManager ? weaponManager.grenadesReady : 0,
+      difficulty: difficulty.key,
+      player: controller ? { x: controller.position.x, z: controller.position.z } : null,
+    };
+  },
+  stats: () => stats,
+  obstacles: () => (controller
+    ? controller.obstacles
+      .filter((o) => o.userData.collision)
+      .map((o) => ({
+        x: o.position.x, z: o.position.z,
+        sx: o.userData.collision.size.x, sy: o.userData.collision.size.y, sz: o.userData.collision.size.z,
+      }))
+    : []),
+  teleport(x, z) {
+    if (controller) {
+      controller.position.set(x, controller.position.y, z);
+      camera.position.set(x, 1.6, z);
+    }
+  },
+};

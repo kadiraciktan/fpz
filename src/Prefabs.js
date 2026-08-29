@@ -243,7 +243,7 @@ export function createStreetLamp(withLight = true) {
     blending: THREE.AdditiveBlending,
     depthWrite: false,
   });
-  const pool = new THREE.Mesh(new THREE.CircleGeometry(2.2, 24), poolMat);
+  const pool = new THREE.Mesh(new THREE.CircleGeometry(2.2, 8), poolMat);
   pool.rotation.x = -Math.PI / 2;
   pool.position.set(0.625, 0.02, 0);
   group.add(pool);
@@ -452,6 +452,175 @@ export function createBarrier(width = 5, cost = 500, style = 'wood') {
 
   group.userData.type = 'barrier';
   group.userData.cost = cost;
+  return group;
+}
+
+/**
+ * Canvas text sign sprite (two lines: title + amber subtitle).
+ * Shared by wall guns, the Pack-a-Punch machine and their state updates.
+ */
+export function makeLabelSign(title, sub, colorHex = '#ffd54f', w = 256, h = 96) {
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = 'rgba(10,12,10,0.85)';
+  ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = colorHex;
+  ctx.lineWidth = 6;
+  ctx.strokeRect(3, 3, w - 6, h - 6);
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 32px sans-serif';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(title, w / 2, h * 0.42);
+  ctx.fillStyle = colorHex;
+  ctx.font = 'bold 26px sans-serif';
+  ctx.fillText(sub, w / 2, h * 0.8);
+  return new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), transparent: true }));
+}
+
+/** Repaint an existing label sign in place (used for SOLD / USED states). */
+export function retintLabelSign(sign, title, sub, colorHex = '#9e9e9e') {
+  if (!sign) return;
+  const fresh = makeLabelSign(title, sub, colorHex);
+  sign.material.map.dispose();
+  sign.material.map = fresh.material.map;
+  fresh.material.dispose();
+  sign.material.needsUpdate = true;
+}
+
+/**
+ * Wall weapon mount (CoD zombies "wall buy" style): a gun silhouette on a
+ * wall bracket with a glowing price sign above it.
+ * @param {string} label - weapon display name on the sign
+ * @param {number} cost  - point cost shown on the sign
+ * @returns {THREE.Group}
+ */
+export function createWallGun(label, cost) {
+  const group = new THREE.Group();
+
+  const steel = new THREE.MeshStandardMaterial({ color: 0x3c4046, roughness: 0.55, metalness: 0.6 });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x24272b, roughness: 0.7, metalness: 0.4 });
+
+  // Backboard + bracket.
+  const board = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.7, 0.08), dark);
+  board.position.y = 1.25;
+  board.castShadow = true;
+  group.add(board);
+  const rail = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.07, 0.16), steel);
+  rail.position.set(0, 1.12, 0.1);
+  group.add(rail);
+
+  // Stylised gun silhouette (receiver + barrel + stock + grip).
+  const gun = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.11, 0.09), steel);
+  gun.add(body);
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.4, 8), steel);
+  barrel.rotation.z = Math.PI / 2;
+  barrel.position.set(0.42, 0.01, 0);
+  gun.add(barrel);
+  const stock = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.09, 0.07), dark);
+  stock.position.set(-0.36, -0.02, 0);
+  stock.rotation.z = -0.12;
+  gun.add(stock);
+  const grip = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.17, 0.06), dark);
+  grip.position.set(-0.1, -0.13, 0);
+  grip.rotation.z = 0.35;
+  gun.add(grip);
+  const mag = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.16, 0.05), dark);
+  mag.position.set(0.06, -0.13, 0);
+  gun.add(mag);
+  gun.position.set(0, 1.25, 0.12);
+  gun.rotation.z = 0.06;
+  gun.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+  group.add(gun);
+  group.userData.gun = gun;
+
+  // Glow strip under the rail — goes dark once bought.
+  const glow = new THREE.Mesh(
+    new THREE.BoxGeometry(1.0, 0.05, 0.05),
+    new THREE.MeshStandardMaterial({ color: 0xffd54f, emissive: 0xffb300, emissiveIntensity: 1.2 })
+  );
+  glow.position.set(0, 0.87, 0.12);
+  group.add(glow);
+  group.userData.glowMat = glow.material;
+
+  const sign = makeLabelSign(label, `E · ${cost} PUAN`, '#ffd54f');
+  sign.scale.set(1.7, 0.64, 1);
+  sign.position.y = 1.95;
+  group.add(sign);
+  group.userData.sign = sign;
+
+  group.userData.type = 'wallGun';
+  return group;
+}
+
+/**
+ * Pack-a-Punch machine: a hulking purple-rimmed upgrade station with a
+ * Tesla-coil arch. E to pay, upgrades the ACTIVE weapon once per run.
+ * @param {number} cost - points shown on the sign
+ * @returns {THREE.Group}
+ */
+export function createPapMachine(cost) {
+  const group = new THREE.Group();
+  const purple = 0x9c27b0;
+
+  const bodyMat = new THREE.MeshStandardMaterial({ color: 0x1e2126, roughness: 0.6, metalness: 0.5 });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(1.7, 1.5, 0.9), bodyMat);
+  body.position.y = 0.75;
+  body.castShadow = true;
+  body.receiveShadow = true;
+  group.add(body);
+
+  // Angled top console with glowing readout.
+  const console_ = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.3, 0.7), bodyMat);
+  console_.position.set(0, 1.65, 0.1);
+  console_.rotation.x = -0.3;
+  console_.castShadow = true;
+  group.add(console_);
+  const readout = new THREE.Mesh(
+    new THREE.BoxGeometry(1.2, 0.18, 0.05),
+    new THREE.MeshStandardMaterial({ color: purple, emissive: purple, emissiveIntensity: 1.1 })
+  );
+  readout.position.set(0, 1.68, 0.42);
+  readout.rotation.x = -0.3;
+  group.add(readout);
+
+  // Energy arch (two coils + top ring) around the work platform.
+  const coilMat = new THREE.MeshStandardMaterial({ color: purple, emissive: purple, emissiveIntensity: 0.8, roughness: 0.4 });
+  for (const side of [-1, 1]) {
+    const coil = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.13, 2.3, 10), coilMat);
+    coil.position.set(side * 0.95, 1.15, -0.15);
+    coil.castShadow = true;
+    group.add(coil);
+    const cap = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), coilMat);
+    cap.position.set(side * 0.95, 2.4, -0.15);
+    group.add(cap);
+  }
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.95, 0.06, 8, 24, Math.PI), coilMat);
+  ring.position.set(0, 2.4, -0.15);
+  group.add(ring);
+
+  // Front work tray where the gun goes in.
+  const tray = new THREE.Mesh(
+    new THREE.BoxGeometry(1.0, 0.08, 0.5),
+    new THREE.MeshStandardMaterial({ color: 0x5b5f66, roughness: 0.35, metalness: 0.8 })
+  );
+  tray.position.set(0, 0.95, 0.65);
+  group.add(tray);
+
+  const sign = makeLabelSign('PACK-A-PUNCH', `E · ${cost} PUAN`, '#ce93d8');
+  sign.scale.set(2.0, 0.75, 1);
+  sign.position.y = 3.1;
+  group.add(sign);
+  group.userData.sign = sign;
+  group.userData.glowMats = [readout.material, coilMat];
+
+  group.userData.type = 'papMachine';
+  group.userData.collision = {
+    size: new THREE.Vector3(1.8, 1.6, 1.0),
+    isStatic: true,
+  };
   return group;
 }
 

@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import { buildModel } from './ModelLoader.js';
 import { Animator } from './Animation.js';
+import { BARRIER_CHEW_RATE } from './game/zombies.js';
+import { insertHash, queryHash } from './game/spatial.js';
+import { circleHitsOBB, resolveCircleOBB } from './game/collision.js';
 import { zombieModel } from '../models/zombie.js';
 import { headcrabModel } from '../models/headcrab.js';
 import { zombieTexture, zombieSprinterTexture, zombieBruteTexture, zombieBomberTexture, headcrabTexture } from '../textures/zombie.js';
@@ -30,8 +33,20 @@ export const ENEMY_TYPES = {
 
 // Recycled viewmodel groups, shared across all Enemy instances. Kept per
 // skin so a pooled group never comes back wearing another type's texture.
-const POOL_MAX = 10;
+const POOL_MAX = 28;
 const pools = new Map();
+
+// Distance LOD (squared). Far zombies walk cheap; pose/steer/crowd only
+// kick in once they close in.
+const LOD_ANIM_SQ = 36 * 36;
+const LOD_SEPARATE_SQ = 18 * 18;
+const LOD_CHEW_SQ = 16 * 16;
+
+const _toScratch = new THREE.Vector3();
+const _resolveOut = { x: 0, z: 0 };
+
+/** Shared per-frame crowd index + tall-obstacle cache (filled by prepareFrame). */
+const crowd = { hash: new Map(), cell: 2, tall: [], near: [] };
 
 export class Enemy {
   /**
@@ -129,12 +144,39 @@ export class Enemy {
     // Static references shared with the game loop
     this._obstacles = options.obstacles || null;
     this._sandbags = options.sandbags || null;
+    // Opened CoD-style barriers: the horde chews them back shut (defend!).
+    this._barriers = options.barriers || null;
     // Lazy accessor for the live enemy list (used for crowding/avoidance).
     this._getPeers = options.getPeers || null;
 
     // Keyframe animations (idle / walk / attack / death)
     this.animator = new Animator(this.group, this._modelDef.anims);
     this.animator.play('idle');
+  }
+
+  /**
+   * Rebuild the shared spatial hash + tall-obstacle list once per tick so
+   * every zombie can query neighbours / walls without an O(n²) scan.
+   */
+  static prepareFrame(enemies, obstacles) {
+    const hash = crowd.hash;
+    hash.clear();
+    const cell = crowd.cell;
+    for (let i = 0; i < enemies.length; i++) {
+      const e = enemies[i];
+      if (!e.alive || e.dying) continue;
+      const p = e.group.position;
+      insertHash(hash, p.x, p.z, cell, e);
+    }
+    const tall = crowd.tall;
+    tall.length = 0;
+    if (obstacles) {
+      for (let i = 0; i < obstacles.length; i++) {
+        const obs = obstacles[i];
+        const col = obs.userData.collision;
+        if (col && col.size.y > 0.8) tall.push(obs);
+      }
+    }
   }
 
   /** Zero out any pose left over from a previous life of a pooled group. */
@@ -175,15 +217,20 @@ export class Enemy {
    * @returns {number} damage dealt to player this tick (0 if none)
    */
   update(dt, playerPos) {
+    const pos = this.group.position;
+    const pdx = pos.x - playerPos.x;
+    const pdz = pos.z - playerPos.z;
+    const playerDistSq = pdx * pdx + pdz * pdz;
+
     // Hit-flash decay (white-hot tint that fades over ~0.12 s)
     if (this._flash > 0) {
       this._flash = Math.max(0, this._flash - dt * 8);
       const e = this._flash;
       for (const m of this._meshes) m.material.emissive.setRGB(e, e * 0.35, e * 0.35);
-    } else if (this.params.explosive && this.alive && !this.dying) {
-      // Bomber: ominous orange pulse.
-      const p = 0.35 + 0.25 * Math.sin(performance.now() * 0.012);
-      for (const m of this._meshes) m.material.emissive.setRGB(p, p * 0.35, 0);
+    } else if (this.params.explosive && this.alive && !this.dying && playerDistSq < LOD_ANIM_SQ) {
+      // Bomber: ominous orange pulse (skip when far — material writes are dear).
+      const pulse = 0.35 + 0.25 * Math.sin(performance.now() * 0.012);
+      for (const m of this._meshes) m.material.emissive.setRGB(pulse, pulse * 0.35, 0);
     }
 
     // Knockback impulse decay
@@ -217,12 +264,11 @@ export class Enemy {
     if (!this.alive) return 0;
 
     const dir = this._dir || (this._dir = new THREE.Vector3());
-    const pos = this.group.position;
 
     // Bomber: proximity detonation — big damage, main loop handles the FX.
     if (this.params.explosive) {
-      const pd = pos.distanceTo(playerPos);
-      if (pd < this.params.detonateRange) {
+      const det = this.params.detonateRange;
+      if (playerDistSq < det * det) {
         this.alive = false;
         this.exploded = true;
         return 30;
@@ -234,8 +280,7 @@ export class Enemy {
     let target = playerPos;
     if (this._lureTimer > 0) {
       this._lureTimer -= dt;
-      const playerDist = pos.distanceTo(playerPos);
-      if (this._lurePos && playerDist > this.params.attackRange) target = this._lurePos;
+      if (this._lurePos && Math.sqrt(playerDistSq) > this.params.attackRange) target = this._lurePos;
       if (this._lureTimer <= 0) this._lurePos = null;
     }
 
@@ -255,10 +300,15 @@ export class Enemy {
         const steer = this._steer(pos, dir);
         this.group.position.addScaledVector(steer, this.params.speed * dt);
         this._collideObstacles();
-        this._separate();
-        this._collideObstacles();
+        if (playerDistSq < LOD_SEPARATE_SQ) {
+          this._separate();
+          this._collideObstacles();
+        }
         this._watchStuck(dt, dir);
-        this._chewSandbags(dt, dir);
+        if (playerDistSq < LOD_CHEW_SQ) {
+          this._chewSandbags(dt, dir);
+          this._chewBarriers(dt, dir);
+        }
 
         // Face where we're actually walking (drifts off at corners)
         this.group.rotation.y = Math.atan2(steer.x, steer.z);
@@ -269,7 +319,9 @@ export class Enemy {
           this._currentAnim = 'walk';
         }
       }
-      this.animator.update(dt);
+      // LOD: far-away zombies don't need per-frame pose updates (they
+      // freeze mid-stride; re-close and the walk resumes).
+      if (playerDistSq < LOD_ANIM_SQ) this.animator.update(dt);
     } else if (target === playerPos) {
       // In range: attack, and keep eyes on the prey
       this.group.rotation.y = Math.atan2(dir.x, dir.z);
@@ -292,9 +344,14 @@ export class Enemy {
         const steer = this._steer(pos, dir);
         this.group.position.addScaledVector(steer, this.params.speed * 0.8 * dt);
         this._collideObstacles();
-        this._separate();
-        this._collideObstacles();
-        this._chewSandbags(dt, dir);
+        if (playerDistSq < LOD_SEPARATE_SQ) {
+          this._separate();
+          this._collideObstacles();
+        }
+        if (playerDistSq < LOD_CHEW_SQ) {
+          this._chewSandbags(dt, dir);
+          this._chewBarriers(dt, dir);
+        }
         this.group.rotation.y = Math.atan2(steer.x, steer.z);
         if (this._currentAnim !== 'walk') {
           this.animator.play('walk');
@@ -312,13 +369,15 @@ export class Enemy {
       this.animator.update(dt);
     }
 
-    // Subtle vertical bob (walk vs idle)
-    if (this._currentAnim === 'walk') {
-      this._bobTime += dt;
-      this.group.position.y = Math.abs(Math.sin(this._bobTime * 5)) * 0.03;
-    } else if (this._currentAnim === 'idle') {
-      this._bobTime += dt;
-      this.group.position.y = Math.abs(Math.sin(this._bobTime * 2)) * 0.02;
+    // Subtle vertical bob (walk vs idle) — skip when far.
+    if (playerDistSq < LOD_ANIM_SQ) {
+      if (this._currentAnim === 'walk') {
+        this._bobTime += dt;
+        this.group.position.y = Math.abs(Math.sin(this._bobTime * 5)) * 0.03;
+      } else if (this._currentAnim === 'idle') {
+        this._bobTime += dt;
+        this.group.position.y = Math.abs(Math.sin(this._bobTime * 2)) * 0.02;
+      }
     }
 
     return damaged;
@@ -351,6 +410,7 @@ export class Enemy {
       this._collideObstacles();
       this._watchStuck(dt, dir);
       this._chewSandbags(dt, dir);
+      this._chewBarriers(dt, dir);
       this.group.rotation.y = Math.atan2(steer.x, steer.z);
       if (this._currentAnim !== 'walk') {
         this.animator.play('walk');
@@ -365,21 +425,18 @@ export class Enemy {
    * the player controller.
    */
   _collideObstacles() {
-    if (!this._obstacles) return;
+    const cached = crowd.tall.length > 0;
+    const list = cached ? crowd.tall : this._obstacles;
+    if (!list) return;
     const p = this.group.position;
-    const r = 0.32;
-    for (const obs of this._obstacles) {
+    const r = 0.26;
+    for (let i = 0; i < list.length; i++) {
+      const obs = list[i];
       const col = obs.userData.collision;
-      if (!col || col.size.y <= 0.8) continue;
-      const hx = col.size.x / 2 + r;
-      const hz = col.size.z / 2 + r;
-      const dx = p.x - obs.position.x;
-      const dz = p.z - obs.position.z;
-      if (Math.abs(dx) < hx && Math.abs(dz) < hz) {
-        const penX = hx - Math.abs(dx);
-        const penZ = hz - Math.abs(dz);
-        if (penX < penZ) p.x = obs.position.x + (dx >= 0 ? hx : -hx);
-        else p.z = obs.position.z + (dz >= 0 ? hz : -hz);
+      if (!col || (!cached && col.size.y <= 0.8)) continue;
+      if (resolveCircleOBB(p.x, p.z, r, obs, _resolveOut)) {
+        p.x = _resolveOut.x;
+        p.z = _resolveOut.z;
       }
     }
   }
@@ -393,8 +450,8 @@ export class Enemy {
    */
   _steer(pos, dir) {
     const out = this._steerVec.copy(dir);
-    if (!this._obstacles) return out;
-    const look = 0.5 + this.group.scale.x * 0.55;
+    if (!this._obstacles && !crowd.tall.length) return out;
+    const look = 0.4 + this.group.scale.x * 0.35;
     if (!this._blockedAhead(pos, dir.x, dir.z, look)) return out;
 
     const base = Math.atan2(dir.x, dir.z);
@@ -417,18 +474,16 @@ export class Enemy {
 
   /** True if the probe points at half/full `look` ahead hit a tall obstacle. */
   _blockedAhead(p, dx, dz, look) {
-    const r = 0.32;
-    for (const obs of this._obstacles) {
+    const cached = crowd.tall.length > 0;
+    const list = cached ? crowd.tall : this._obstacles;
+    if (!list) return false;
+    const r = 0.26;
+    for (let i = 0; i < list.length; i++) {
+      const obs = list[i];
       const col = obs.userData.collision;
-      if (!col || col.size.y <= 0.8) continue;
-      const hx = col.size.x / 2 + r;
-      const hz = col.size.z / 2 + r;
-      const px = p.x + dx * look;
-      const pz = p.z + dz * look;
-      if (Math.abs(px - obs.position.x) < hx && Math.abs(pz - obs.position.z) < hz) return true;
-      const mx = p.x + dx * look * 0.5;
-      const mz = p.z + dz * look * 0.5;
-      if (Math.abs(mx - obs.position.x) < hx && Math.abs(mz - obs.position.z) < hz) return true;
+      if (!col || (!cached && col.size.y <= 0.8)) continue;
+      if (circleHitsOBB(p.x + dx * look, p.z + dz * look, r, obs)) return true;
+      if (circleHitsOBB(p.x + dx * look * 0.5, p.z + dz * look * 0.5, r, obs)) return true;
     }
     return false;
   }
@@ -436,18 +491,20 @@ export class Enemy {
   /** Soft body separation: nudge overlapping zombies apart so the horde
    *  spreads into a crowd instead of stacking into a single dot. */
   _separate() {
-    if (!this._getPeers) return;
-    const peers = this._getPeers();
-    if (!peers) return;
     const p = this.group.position;
-    const r = 0.38 * this.group.scale.x;
-    for (const other of peers) {
+    const peers = crowd.hash.size
+      ? queryHash(crowd.hash, p.x, p.z, crowd.cell, 1, crowd.near)
+      : (this._getPeers ? this._getPeers() : null);
+    if (!peers) return;
+    const r = 0.30 * this.group.scale.x;
+    for (let i = 0; i < peers.length; i++) {
+      const other = peers[i];
       if (other === this || !other.alive || other.dying) continue;
       const o = other.group.position;
       const dx = p.x - o.x;
       const dz = p.z - o.z;
       const d2 = dx * dx + dz * dz;
-      const min = r + 0.38 * other.group.scale.x;
+      const min = r + 0.30 * other.group.scale.x;
       if (d2 >= min * min) continue;
       if (d2 < 1e-5) {
         p.x += this._avoidSide * 0.02;
@@ -472,13 +529,39 @@ export class Enemy {
     this._prevZ = p.z;
     if (progress < this.params.speed * dt * 0.4) {
       this._stuckTimer += dt;
-      if (this._stuckTimer > 0.25) {
-        this._avoidSide *= -1;
-        this._stuckTimer = 0;
+      if (this._stuckTimer > 0.25) this._avoidSide *= -1;
+      if (this._stuckTimer > 0.8) this._unstickNudge(wantDir);
+      if (this._stuckTimer > 1.6) {
+        this._unstickNudge(wantDir, 1.1);
+        this._stuckTimer = 0.2;
       }
     } else {
       this._stuckTimer = Math.max(0, this._stuckTimer - dt * 3);
     }
+  }
+
+  /**
+   * When whiskers fail in a pinch, step sideways / along the wall toward
+   * the first heading that isn't blocked so a gap one body-width wide
+   * still drains instead of parking the horde forever.
+   */
+  _unstickNudge(wantDir, dist = 0.55) {
+    const p = this.group.position;
+    const base = Math.atan2(wantDir.x, wantDir.z);
+    const look = 0.45;
+    for (let i = 1; i <= 8; i++) {
+      const a = base + this._avoidSide * (Math.PI / 8) * i;
+      const dx = Math.sin(a);
+      const dz = Math.cos(a);
+      if (this._blockedAhead(p, dx, dz, look)) continue;
+      p.x += dx * dist;
+      p.z += dz * dist;
+      this._collideObstacles();
+      this._avoidSide *= -1;
+      return;
+    }
+    p.x += this._avoidSide * dist * 0.6;
+    this._collideObstacles();
   }
 
   /** Zombies stuck against a sandbag chew through it (~5 s). */
@@ -487,13 +570,51 @@ export class Enemy {
     const p = this.group.position;
     for (const bag of this._sandbags) {
       if (bag.userData.hp <= 0) continue;
-      const d = bag.position.distanceTo(p);
-      if (d > 1.6) continue;
-      // Only bags actually in the zombie's way.
-      const toBag = bag.position.clone().sub(p).setY(0).normalize();
+      const dx = bag.position.x - p.x;
+      const dz = bag.position.z - p.z;
+      if (dx * dx + dz * dz > 2.56) continue;
+      const toBag = _toScratch.set(dx, 0, dz);
+      if (toBag.lengthSq() < 1e-6) continue;
+      toBag.normalize();
       if (toBag.dot(moveDir) < 0.4) continue;
       bag.userData.hp -= 14 * dt;
     }
+  }
+
+  /**
+   * Zombies funneling through an OPENED barrier tear at its frame; enough
+   * traffic across the waves rips it back shut (main.js reseals the zone).
+   */
+  _chewBarriers(dt, moveDir) {
+    if (!this._barriers || !this._barriers.length) return;
+    const p = this.group.position;
+    for (const b of this._barriers) {
+      if (!b.open || b.hp <= 0) continue;
+      const dx = b.mesh.position.x - p.x;
+      const dz = b.mesh.position.z - p.z;
+      if (dx * dx + dz * dz > 5.76) continue;
+      const toGate = _toScratch.set(dx, 0, dz);
+      if (toGate.lengthSq() < 1e-6) continue;
+      toGate.normalize();
+      if (toGate.dot(moveDir) < 0.3) continue;
+      b.hp -= BARRIER_CHEW_RATE * dt;
+    }
+  }
+
+  /**
+   * Grenade / blast damage with linear falloff. Applies a radial knockback
+   * so the explosion visibly shoves the horde around.
+   * @returns {boolean} true if this zombie died from the blast
+   */
+  applyExplosion(center, radius = 5, maxDamage = 8) {
+    if (!this.alive || this.dying) return false;
+    const d = this.group.position.distanceTo(center);
+    if (d >= radius) return false;
+    const dmg = Math.max(0, Math.round(maxDamage * (1 - d / radius)));
+    if (dmg <= 0) return false;
+    const push = new THREE.Vector3().subVectors(this.group.position, center).setY(0);
+    if (push.lengthSq() > 1e-5) this.knockback(push.normalize(), 0.6);
+    return this.takeDamage(dmg);
   }
 
   /**

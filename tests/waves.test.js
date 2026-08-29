@@ -13,9 +13,13 @@ import {
 } from '../src/game/waves.js';
 
 test('waveCount grows linearly with the round', () => {
-  assert.equal(waveCount(1), 5);
-  assert.equal(waveCount(2), 7);
-  assert.equal(waveCount(10), 23);
+  assert.equal(waveCount(1), 6);
+  assert.equal(waveCount(2), 9);
+  assert.equal(waveCount(10), 28);
+  const a = waveCount(1);
+  const b = waveCount(2);
+  const c = waveCount(10);
+  assert.ok(a < b && b < c, 'monotonic');
 });
 
 test('waveParams scale hp, speed and damage monotonically', () => {

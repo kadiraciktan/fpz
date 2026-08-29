@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { resolveCircleOBB } from './game/collision.js';
 
 /**
  * FPSController.js
@@ -6,7 +7,7 @@ import * as THREE from 'three';
  *  - WASD movement relative to camera yaw
  *  - Sprint (Shift), Jump (Space)
  *  - Gravity
- *  - AABB collision against static obstacles (crates / walls)
+ *  - Circle vs OBB collision against static obstacles (crates / walls)
  *
  * The controller owns the camera and the gun model.
  */
@@ -393,66 +394,37 @@ export class FPSController {
   }
 
   /**
-   * Resolve AABB collisions with static obstacles.
-   * Player is treated as a capsule approximated by an AABB.
+   * Resolve collisions: Y stays AABB (jump / land), XZ is a circle vs the
+   * obstacle's yaw-oriented box so rotated walls don't become invisible slabs.
    */
   _resolveCollisions() {
     const p = this.params;
-    const halfW = p.playerRadius;
+    const r = p.playerRadius;
     const feetY = this.position.y - p.eyeHeight;
-    const playerMin = new THREE.Vector3(
-      this.position.x - halfW,
-      feetY,
-      this.position.z - halfW
-    );
-    const playerMax = new THREE.Vector3(
-      this.position.x + halfW,
-      feetY + p.playerHeight,
-      this.position.z + halfW
-    );
+    const playerMinY = feetY;
+    const playerMaxY = feetY + p.playerHeight;
+    const out = this._colOut || (this._colOut = { x: 0, z: 0 });
 
     for (const obs of this.obstacles) {
       const col = obs.userData.collision;
       if (!col) continue;
-      const center = obs.position;
-      const half = col.size.clone().multiplyScalar(0.5);
-      const obsMin = new THREE.Vector3(
-        center.x - half.x,
-        center.y - half.y,
-        center.z - half.z
-      );
-      const obsMax = new THREE.Vector3(
-        center.x + half.x,
-        center.y + half.y,
-        center.z + half.z
-      );
+      const hy = col.size.y / 2;
+      if (playerMinY >= obs.position.y + hy || playerMaxY <= obs.position.y - hy) continue;
 
-      // Check overlap
-      if (
-        playerMin.x < obsMax.x && playerMax.x > obsMin.x &&
-        playerMin.y < obsMax.y && playerMax.y > obsMin.y &&
-        playerMin.z < obsMax.z && playerMax.z > obsMin.z
-      ) {
-        // Compute penetration on each axis
-        const overlapX = Math.min(playerMax.x - obsMin.x, obsMax.x - playerMin.x);
-        const overlapY = Math.min(playerMax.y - obsMin.y, obsMax.y - playerMin.y);
-        const overlapZ = Math.min(playerMax.z - obsMin.z, obsMax.z - playerMin.z);
-
-        // Resolve along the smallest penetration axis
-        if (overlapX < overlapY && overlapX < overlapZ) {
-          const dir = this.position.x < center.x ? -1 : 1;
-          this.position.x += dir * overlapX;
-          this.velocity.x = 0;
-        } else if (overlapY < overlapZ) {
-          const dir = this.position.y < center.y ? -1 : 1;
-          this.position.y += dir * overlapY;
-          if (dir < 0) {
-            this.velocity.y = 0;
-            this.onGround = true;
-          }
+      const overlapY = Math.min(playerMaxY - (obs.position.y - hy), (obs.position.y + hy) - playerMinY);
+      if (resolveCircleOBB(this.position.x, this.position.z, r, obs, out)) {
+        const dx = out.x - this.position.x;
+        const dz = out.z - this.position.z;
+        const push = Math.hypot(dx, dz);
+        // Standing on a crate: resolve Y instead of sliding off the top.
+        if (overlapY < push && this.position.y >= obs.position.y) {
+          this.position.y += overlapY;
+          this.velocity.y = 0;
+          this.onGround = true;
         } else {
-          const dir = this.position.z < center.z ? -1 : 1;
-          this.position.z += dir * overlapZ;
+          this.position.x = out.x;
+          this.position.z = out.z;
+          this.velocity.x = 0;
           this.velocity.z = 0;
         }
       }

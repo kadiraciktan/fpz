@@ -6,7 +6,8 @@
 
 /** Total zombies for a round (bosses are counted separately). */
 export function waveCount(round) {
-  return 3 + round * 2;
+  // Slightly denser horde to cover the bigger maps.
+  return Math.round(4 + round * 2.4);
 }
 
 /** Round-scaled base stats for a normal zombie. */

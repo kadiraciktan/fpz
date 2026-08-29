@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>FPZ — First Person Zombies</title>
+  <link rel="icon" href="data:," />
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
@@ -387,6 +388,24 @@
     .optRow .optLabel { color: #b8ae90; text-align: left; }
     .optRow .optVal { color: #ffd54f; text-align: right; }
     .optRow input[type="range"] { width: 100%; accent-color: #7cb342; }
+    .qualRow { display: flex; gap: 6px; }
+    #overlay button.qualBtn {
+      flex: 1;
+      font-family: "Courier New", Courier, monospace;
+      font-size: 11px;
+      letter-spacing: 1px;
+      padding: 6px 4px;
+      border: 1px solid rgba(180, 170, 140, 0.4);
+      border-radius: 4px;
+      background: rgba(30, 32, 28, 0.7);
+      color: #cfc9b5;
+    }
+    #overlay button.qualBtn:hover { background: rgba(45, 47, 40, 0.85); }
+    #overlay button.qualBtn.selected {
+      border-color: #7cb342;
+      color: #d4edb5;
+      background: rgba(40, 55, 30, 0.75);
+    }
     .optHint {
       font-family: "Courier New", Courier, monospace;
       font-size: 10px;
@@ -568,6 +587,55 @@
     }
     .mapCard .mapName { font-weight: bold; font-size: 15px; letter-spacing: 1px; }
     .mapCard .mapDesc { font-size: 11px; color: #9a927c; margin-top: 4px; line-height: 1.4; }
+    .mapCard .mapRecord { font-size: 10px; color: #ffd54f; margin-top: 6px; letter-spacing: 0.5px; }
+    /* Difficulty selector */
+    .diffRow { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    .diffCard {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      border: 2px solid rgba(180, 170, 140, 0.35);
+      border-radius: 8px;
+      padding: 10px 12px;
+      cursor: pointer;
+      background: rgba(30, 32, 28, 0.7);
+      transition: border-color 0.15s, transform 0.15s, background 0.15s;
+      text-align: center;
+    }
+    .diffCard:hover { transform: translateY(-2px); background: rgba(45, 47, 40, 0.8); }
+    .diffCard.selected {
+      border-color: #ffb300;
+      background: rgba(60, 45, 15, 0.55);
+      box-shadow: 0 0 12px rgba(255, 179, 0, 0.3);
+    }
+    .diffCard b { font-size: 14px; letter-spacing: 1px; }
+    .diffCard span { font-size: 10px; color: #9a927c; line-height: 1.4; }
+    /* Compass ribbon (top-center HUD) */
+    #compass {
+      position: absolute;
+      top: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 420px;
+      height: 40px;
+      background: rgba(20, 24, 18, 0.6);
+      border: 1px solid rgba(180, 170, 140, 0.4);
+      border-radius: 6px;
+    }
+    /* Buff countdown strip (insta-kill / double points / difficulty) */
+    #buffs {
+      position: absolute;
+      bottom: 52px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 14px;
+      font-weight: bold;
+      letter-spacing: 1px;
+      color: #ffcc80;
+      text-shadow: 0 1px 3px rgba(0,0,0,0.95);
+    }
+    /* Keep the wave countdown clear of the buff strip */
+    #prep { top: 84px !important; }
     .attachRow {
       display: flex;
       align-items: center;
@@ -1142,6 +1210,8 @@
     <div id="gear"></div>
     <div id="prep"></div>
     <div id="perks"></div>
+    <div id="buffs"></div>
+    <canvas id="compass" width="420" height="40"></canvas>
   </div>
 
   <div id="scopeOverlay"></div>
@@ -1153,6 +1223,11 @@
     <div class="menuSection">
       <h2>Harita Seç</h2>
       <div class="mapCards" id="mapCards"></div>
+    </div>
+
+    <div class="menuSection">
+      <h2>Zorluk</h2>
+      <div class="diffRow" id="diffRow"></div>
     </div>
 
     <div class="menuSection">
@@ -1175,6 +1250,7 @@
       <span><kbd>R</kbd> şarjör</span>
       <span><kbd>V</kbd> süngü</span>
       <span><kbd>G</kbd> ses bombası</span>
+      <span><kbd>H</kbd> el bombası</span>
       <span><kbd>B</kbd> kum torbası</span>
       <span><kbd>SAĞ TIK</kbd> nişan</span>
       <span><kbd>1-4</kbd> silah</span>
@@ -1236,6 +1312,15 @@
         <span class="optLabel">Görüş Açısı (FOV)</span>
         <input id="optFov" type="range" min="65" max="100" step="1" />
         <span class="optVal" id="optFovVal">75°</span>
+      </div>
+      <div class="optRow">
+        <span class="optLabel">Grafik</span>
+        <div class="qualRow" id="optQuality">
+          <button type="button" class="qualBtn" data-quality="low">DÜŞÜK</button>
+          <button type="button" class="qualBtn selected" data-quality="med">ORTA</button>
+          <button type="button" class="qualBtn" data-quality="high">YÜKSEK</button>
+        </div>
+        <span class="optVal" id="optQualityVal">ORTA</span>
       </div>
       <div class="optHint">Gamepad destekli — sol stick hareket, RT ateş, Y etkileşim</div>
     </div>

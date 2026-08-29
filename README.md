@@ -8,6 +8,7 @@ A browser-based zombie FPS built with Three.js (v0.160.0). No build tools — pu
 npm install          # installs three.js for Node-based tests
 npm test             # run all unit tests (node --test)
 npm run check:assets # validate all model/texture definitions
+npm run check:modules# verify every relative ESM import resolves
 ```
 
 To play in the browser, serve the project root with any static file server:
@@ -33,7 +34,8 @@ python3 -m http.server 8080
 │   │   ├── attachments.js  #   Optic/suppressor/grip/mag/stock builders
 │   │   └── viewmodels.js   #   Gun, hands and first-person legs meshes
 │   ├── game/
-│   │   └── waves.js        #   Pure wave scaling + special round formulas
+│   │   ├── waves.js        #   Pure wave scaling + special round formulas
+│   │   └── zombies.js      #   Difficulty, Pack-a-Punch, grenade & barrier math
 │   ├── ui/
 │   │   └── gunsmith.js     #   Gunsmith screen (preview renderer, cards)
 │   ├── Enemy.js            # Zombie AI: walk/attack/death + Animator (+ hopping headcrab mode)
@@ -67,7 +69,10 @@ python3 -m http.server 8080
 ├── tests/
 │   ├── model_loader.test.js  # buildTexture + buildModel unit tests
 │   ├── assets.test.js        # All model/texture definitions valid
-│   └── animation.test.js     # Animator interpolation, loops, onEnd
+│   ├── animation.test.js     # Animator interpolation, loops, onEnd
+│   ├── waves.test.js         # Wave scaling + special round formulas
+│   ├── ammo.test.js          # Ammo economy + weighted loot picks
+│   └── zombies.test.js       # Difficulty, PaP, grenades, barrier, machine spots
 ├── tools/
 │   └── check-assets.js     # CLI validator for all assets
 └── dev/
@@ -156,9 +161,10 @@ Features: turntable rotation, part picking, wireframe toggle, texture preview.
 | RMB | Aim (ADS) |
 | R | Reload (uses finite reserve ammo) |
 | 1-4 | Switch weapon |
-| E | Interact (pickup / open box / buy perk) |
+| E | Interact (wall gun / Pack-a-Punch / box / perk / barrier / repair) |
 | V | Melee (bayonet) |
 | G | Noisemaker (lures zombies) |
+| H | Frag grenade (AoE — careful up close!) |
 | B | Build sandbag (prep phase) |
 | Esc | Pause menu (sensitivity / volume / FOV sliders) |
 
@@ -261,11 +267,79 @@ wait for a drop:
 The gun replaces your active slot; a duplicate instead refills your ammo.
 Pay again on the same box to reroll.
 
+## Wall Buy + Pack-a-Punch
+
+Every run mounts **3 wall guns flush on real building/perimeter walls** and
+drops a **Pack-a-Punch** station on open ground in the core zone (spot
+solvers + weapon rotation live in `src/game/zombies.js`, unit-tested; the
+compass points at all of them):
+
+- **Wall guns** — 750 / 1000 / 1250 pts, three different weapons per run,
+  hugged onto tall thin wall faces with their backs to the masonry and the
+  player side clear to stand at (floor-mount fallback on maps without usable
+  walls). E to buy; the gun replaces your active slot, the mount flips to SOLD.
+- **Pack-a-Punch** — 5000 pts, once per run, upgrades the gun you are
+  HOLDING: x2+1 damage, +50% mag, +15% range, faster fire/reload, purple
+  glowing **Mk II** viewmodel and a fresh full reserve. Upgraded guns stay
+  upgraded even if the mystery box re-grants them.
+
+## Frag Grenades (H)
+
+One frag per prep phase. Ballistic arc with bounces, 1.6 s fuse, 5 m blast —
+linear damage falloff, radial knockback, and yes, you can grenade yourself.
+
+## Barrier Defense (the horde pushes back)
+
+Opened barriers are not free real estate forever: zombies funneling through
+a gate tear its frame apart (~240 HP of chew). The knocked-down frame sags
+visibly as it drains, the compass marks it `!`, and below ~85% you can pay
+**150 pts (E)** to patch it. If it hits zero the zone is **re-sealed** —
+zombies trapped inside can't be reached, so you'll pay the barrier cost
+again to clear the rubble path.
+
+## Difficulty Modes
+
+Pick NEFER / VETERAN / KÂBUS in the main menu (saved with your loadout).
+Veteran: +50% zombie HP/damage, score x1.5. Nightmare: x2 HP & damage,
++faster zombies, score x2. Best round/score is recorded **per map+difficulty**.
+
+## HUD Upgrades
+
+- **Compass ribbon** (top): K/D/G/B cardinals + live POI dots — `?` mystery
+  box, `P` Pack-a-Punch, `G` wall guns, `!` breaching barrier.
+- **Buff strip**: Insta-Kill / Double Points countdowns + the active
+  difficulty tag; the gear readout now also counts grenades 🧨.
+
+## Persistence (localStorage)
+
+XP + attachment unlocks and lifetime stats were already saved; now also:
+- **Per-run records** — best round & score per map × difficulty (shown on
+  the map cards and the stats screen)
+- **Last deployment** — map, difficulty, loadout, attachments and skins are
+  restored next time you open the menu
+
+## Positional Audio
+
+Zombie growls and headcrab chirps are stereo-panned by their bearing to the
+camera — the moan you hear from behind-left really is behind-left.
+
+## Performance
+
+Pause-menu **Grafik** preset (DÜŞÜK / ORTA / YÜKSEK, saved with the other
+options) drives pixel ratio, shadow maps and shadow-camera size. Defaults
+to ORTA: no MSAA, PCF shadows that follow the player, distant lights and
+casters culled.
+
+Far zombies skip pose updates, steering, crowd separation and chewing;
+horde separation uses a spatial hash so late rounds stay O(n) instead of
+O(n²). F3 toggles the perf HUD; Shift+F3 dumps a mesh breakdown.
+
 ## Audio
 
 All procedural Web Audio — no files. 8 per-weapon gunshot profiles, filtered
-street echo, zombie growls, and a tension music layer (A-minor drone + bass
-sequence) whose tempo and lead register rise with the wave count.
+street echo, bearing-panned zombie growls, and a tension music layer
+(A-minor drone + bass sequence) whose tempo and lead register rise with the
+wave count.
 
 ## Notes
 

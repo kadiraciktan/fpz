@@ -437,8 +437,12 @@ export class Sfx {
     this._ambienceNodes.push(osc, og, lfo, lfoGain);
   }
 
-  /** Zombie growl: detuned guttural murmur, played by nearby walkers. */
-  zombieGrowl(vol = 0.3) {
+  /**
+   * Zombie growl: detuned guttural murmur, played by nearby walkers.
+   * @param {number} vol
+   * @param {number} pan - -1 (left) .. +1 (right) relative to the camera
+   */
+  zombieGrowl(vol = 0.3, pan = 0) {
     if (!this.ctx) return;
     const t = this._now();
     const osc = this.ctx.createOscillator();
@@ -457,11 +461,25 @@ export class Sfx {
     g.gain.setValueAtTime(0.001, t);
     g.gain.exponentialRampToValueAtTime(vol, t + 0.12);
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.7);
-    osc.connect(lp).connect(g).connect(this.master);
+    osc.connect(lp).connect(g).connect(this._panner(pan));
     osc.start(t);
     wob.start(t);
     osc.stop(t + 0.75);
     wob.stop(t + 0.75);
+  }
+
+  /**
+   * Stereo placement for a one-shot: pan -1..+1 relative to the listener.
+   * StereoPannerNode is near-universal but degrade gracefully without it.
+   */
+  _panner(pan = 0) {
+    if (!this.ctx) return this.master;
+    const p = Math.max(-1, Math.min(1, pan || 0));
+    if (!p || !this.ctx.createStereoPanner) return this.master;
+    const node = this.ctx.createStereoPanner();
+    node.pan.value = p;
+    node.connect(this.master);
+    return node;
   }
 
   /** Zombie death scream: rising-then-falling guttural shriek. */
@@ -487,7 +505,7 @@ export class Sfx {
   }
 
   /** Headcrab chirp: short high-pitched shriek, classic squeaky vermin. */
-  headcrabChirp(vol = 0.22) {
+  headcrabChirp(vol = 0.22, pan = 0) {
     if (!this.ctx) return;
     const t = this._now();
     const osc = this.ctx.createOscillator();
@@ -507,7 +525,7 @@ export class Sfx {
     const g = this.ctx.createGain();
     g.gain.setValueAtTime(vol, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.32);
-    osc.connect(bp).connect(g).connect(this.master);
+    osc.connect(bp).connect(g).connect(this._panner(pan));
     osc.start(t);
     vib.start(t);
     osc.stop(t + 0.35);

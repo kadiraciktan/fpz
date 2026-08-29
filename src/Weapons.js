@@ -14,6 +14,7 @@ import {
   MYSTERY_POOL,
 } from './weapons/defs.js';
 import { initialReserve, reloadTransfer, AMMO_CRATE_FACTOR } from './weapons/ammo.js';
+import { papStats, papLabel, GRENADE_FUSE } from './game/zombies.js';
 import {
   ATTACH_ANCHORS,
   attachmentAvailable,
@@ -111,6 +112,11 @@ export class WeaponManager {
     // Procedural sound effects (Web Audio). Unlocked on first user gesture.
     this.sfx = new Sfx();
 
+    // Weapons upgraded at the Pack-a-Punch this run (rebuilt meshes stay
+    // upgraded through mystery-box re-grants and slot swaps). Must exist
+    // before _makeWeapon() runs below.
+    this.papHeld = new Set();
+
     const names = Array.isArray(loadout) && loadout.length ? loadout : DEFAULT_LOADOUT;
     this.weapons = names.map((name) => this._makeWeapon(name));
 
@@ -141,6 +147,10 @@ export class WeaponManager {
     // Noisemakers (G key): bounce around, then lure nearby zombies.
     this.noisemakers = 2;
     this._nades = [];
+
+    // Frag grenades (H key): live inventory, restocked to 1 each prep phase.
+    this.grenadesReady = 1;
+    this._grenades = [];
 
     // Zombie-drink perks (main.js sets keys true when a machine is bought):
     //  speedCola — 40% faster reload · doubleTap — x2 bullet damage
@@ -202,6 +212,8 @@ export class WeaponManager {
       ? Math.round(def.magazineSize * 1.5)
       : def.magazineSize;
     const effDef = { ...def, magazineSize: mag, damage: att.suppressor ? Math.max(1, def.damage - (def.damage > 1 ? 1 : 0)) : def.damage };
+    // Pack-a-Punched this run? Fold in the upgrade stats + Mk II label.
+    if (this.papHeld.has(def.name)) Object.assign(effDef, papStats(effDef), { label: papLabel(effDef) });
     const mesh = createGunMesh(effDef);
     applySkin(mesh, skin);
     // Attach attachment meshes (scope / suppressor / grip / mag / stock).
@@ -243,6 +255,41 @@ export class WeaponManager {
     return name;
   }
 
+  /**
+   * Pack-a-Punch the ACTIVE weapon: rebuilds it through the swap
+   * choreography with upgraded stats + a purple Mk II re-skin.
+   * @returns {string|null} the base weapon name on success, null if denied
+   *                        (already upgraded / mid-swap / reloading)
+   */
+  packAPunch() {
+    const w = this.active;
+    if (this.papHeld.has(w.def.name) || this.swapping || w.reloading) return null;
+    this.papHeld.add(w.def.name);
+    this._commitSwap();
+    this._swapGrant = w.def.name;
+    this._swapPending = null;
+    this._swapT = SWAP_TIME;
+    return w.def.name;
+  }
+
+  /** Give the rebuilt gun mesh the purple pulsing Pack-a-Punch look. */
+  _applyPapVisual(mesh) {
+    mesh.traverse((o) => {
+      if (!o.isMesh || !o.material) return;
+      if (o.material.userData && o.material.userData.isGlass) return;
+      o.material = o.material.clone();
+      const c = o.material.color;
+      c.setRGB(
+        THREE.MathUtils.lerp(c.r, 0.62, 0.45),
+        THREE.MathUtils.lerp(c.g, 0.16, 0.45),
+        THREE.MathUtils.lerp(c.b, 0.78, 0.45)
+      );
+      o.material.emissive = new THREE.Color(0x2a0b3d);
+      o.material.emissiveIntensity = 0.7;
+      o.material.needsUpdate = true;
+    });
+  }
+
   /** True while the lower/raise swap choreography is playing. */
   get swapping() {
     return this._swapT > 0;
@@ -269,7 +316,13 @@ export class WeaponManager {
       old.mesh.traverse((o) => {
         if (o.isMesh && o.material && o.material.map) o.material.dispose();
       });
+      const wasPap = this.papHeld.has(grant);
       this.weapons[this.activeIndex] = this._makeWeapon(grant);
+      if (wasPap) {
+        // Full new reserve for the bigger Mk II magazine + the purple glow.
+        this.active.reserve = initialReserve(this.active.def.magazineSize);
+        this._applyPapVisual(this.active.mesh);
+      }
     } else if (index != null) {
       this.activeIndex = index;
       this.active.reloading = false;
@@ -403,6 +456,7 @@ export class WeaponManager {
       if (e.code === 'Digit4') this.switchTo(3);
       if (e.code === 'KeyV') this._tryMelee();
       if (e.code === 'KeyG') this._throwNoisemaker();
+      if (e.code === 'KeyH') this._throwGrenade();
     };
     window.addEventListener('mousedown', this._onMouseDown);
     window.addEventListener('mouseup', this._onMouseUp);
@@ -500,6 +554,63 @@ export class WeaponManager {
         n.mesh.geometry.dispose();
         n.mesh.material.dispose();
         this._nades.splice(i, 1);
+      }
+    }
+  }
+
+  /**
+   * Throw a frag grenade (H): ballistic arc, bounces, then detonates —
+   * the world damage pass runs through callbacks.onGrenade(point).
+   */
+  _throwGrenade() {
+    if (document.pointerLockElement !== this.controller.domElement) return;
+    if (this.grenadesReady <= 0) {
+      this.sfx.reloadStart(); // dry tin: empty pouch
+      return;
+    }
+    this.grenadesReady--;
+
+    const dir = this.camera.getWorldDirection(new THREE.Vector3());
+    const mesh = new THREE.Mesh(
+      new THREE.SphereGeometry(0.1, 10, 8),
+      new THREE.MeshStandardMaterial({ color: 0x3f4a33, roughness: 0.6, metalness: 0.3 })
+    );
+    mesh.castShadow = true;
+    mesh.position.copy(this.camera.position).addScaledVector(dir, 0.5);
+    mesh.position.y -= 0.15;
+    const vel = dir.clone().multiplyScalar(13);
+    vel.y += 2.6;
+    this.scene.add(mesh);
+    this.sfx.meleeWhoosh(); // throw whistle
+    this._grenades.push({ mesh, vel, fuse: GRENADE_FUSE });
+    if (this.callbacks.onAmmoChange) this.callbacks.onAmmoChange();
+  }
+
+  _grenadesUpdate(dt) {
+    for (let i = this._grenades.length - 1; i >= 0; i--) {
+      const g = this._grenades[i];
+      if (g.fuse > 0) {
+        g.fuse -= dt;
+        g.vel.y -= 20 * dt;
+        g.mesh.position.addScaledVector(g.vel, dt);
+        if (g.mesh.position.y < 0.1 && g.vel.y < 0) {
+          g.mesh.position.y = 0.1;
+          g.vel.y *= -0.4;
+          g.vel.x *= 0.6;
+          g.vel.z *= 0.6;
+          if (Math.abs(g.vel.y) > 0.6) this.sfx.clatter(false);
+        }
+        // Red hot pulse while armed.
+        g.mesh.material.emissive.setRGB(0.5 + 0.5 * Math.sin(performance.now() * 0.03), 0, 0);
+        if (g.fuse <= 0) {
+          this.sfx.explosion();
+          if (this.callbacks.onGrenade) this.callbacks.onGrenade(g.mesh.position.clone());
+          this.scene.remove(g.mesh);
+          g.mesh.geometry.dispose();
+          g.mesh.material.dispose();
+          this._grenades.splice(i, 1);
+          if (this.callbacks.onAmmoChange) this.callbacks.onAmmoChange();
+        }
       }
     }
   }
@@ -840,6 +951,7 @@ export class WeaponManager {
     if (this._meleeCd > 0) this._meleeCd -= dt;
     if (this._meleeT > 0) this._meleeT = Math.max(0, this._meleeT - dt);
     this._nadesUpdate(dt);
+    this._grenadesUpdate(dt);
     if (w.reloading) {
       w.reloadTimer -= dt;
       if (w.reloadTimer <= 0) {
@@ -995,7 +1107,7 @@ export class WeaponManager {
         : `${w.ammo} ▸ ${w.reserve}`;
     }
     if (this._weaponEl) {
-      this._weaponEl.textContent = w.def.name;
+      this._weaponEl.textContent = w.def.label || w.def.name;
     }
   }
 }

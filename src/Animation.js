@@ -42,12 +42,13 @@ export class Animator {
     // Snapshot rest pose for every referenced part so clips can be
     // expressed as small deltas and stop() can restore things cleanly.
     this._rest = new Map();
+    this._partCache = new Map();
     const names = new Set(['root']);
     for (const clip of Object.values(this.clips)) {
       for (const part of Object.keys(clip.tracks || {})) names.add(part);
     }
     for (const name of names) {
-      const obj = name === 'root' ? root : root.getObjectByName(name);
+      const obj = this._part(name);
       if (!obj) continue;
       this._rest.set(name, {
         pos: obj.position.clone(),
@@ -55,10 +56,34 @@ export class Animator {
         scale: obj.scale.clone(),
       });
     }
+    // Pre-split pos/rot/scale keyframes and pin part refs so update()
+    // never filter()s or walks the tree (late-round horde cost).
+    this._compiled = {};
+    for (const [name, clip] of Object.entries(this.clips)) {
+      const tracks = [];
+      for (const [part, keys] of Object.entries(clip.tracks || {})) {
+        const obj = this._part(part);
+        if (!obj) continue;
+        tracks.push({
+          name: part,
+          obj,
+          pos: keys.filter((k) => Array.isArray(k.pos)),
+          rot: keys.filter((k) => Array.isArray(k.rot)),
+          scale: keys.filter((k) => Array.isArray(k.scale)),
+        });
+      }
+      this._compiled[name] = { duration: clip.duration, tracks };
+    }
+    this._chPos = [0, 0, 0];
+    this._chRot = [0, 0, 0];
+    this._chScl = [0, 0, 0];
   }
 
   _part(name) {
-    return name === 'root' ? this.root : this.root.getObjectByName(name);
+    if (this._partCache.has(name)) return this._partCache.get(name);
+    const obj = name === 'root' ? this.root : this.root.getObjectByName(name);
+    this._partCache.set(name, obj || null);
+    return obj;
   }
 
   /** Start (or restart) a named clip. No-op if the clip is unknown. */
@@ -143,45 +168,55 @@ export class Animator {
   }
 
   _apply(tNorm) {
-    const clip = this.clips[this.active];
-    if (!clip) return;
-    for (const [name, keys] of Object.entries(clip.tracks)) {
-      const obj = this._part(name);
-      const rest = this._rest.get(name);
-      if (!obj || !rest) continue;
+    const compiled = this._compiled[this.active];
+    if (!compiled) return;
+    for (const tr of compiled.tracks) {
+      const rest = this._rest.get(tr.name);
+      if (!tr.obj || !rest) continue;
 
-      const dPos = this._channel(keys, 'pos', tNorm);
-      if (dPos) obj.position.set(rest.pos.x + dPos[0], rest.pos.y + dPos[1], rest.pos.z + dPos[2]);
-
-      const dRot = this._channel(keys, 'rot', tNorm);
-      if (dRot) obj.rotation.set(rest.rot.x + dRot[0], rest.rot.y + dRot[1], rest.rot.z + dRot[2]);
-
-      const sc = this._channel(keys, 'scale', tNorm);
-      if (sc) obj.scale.set(sc[0], sc[1], sc[2]);
+      if (this._channel(tr.pos, 'pos', tNorm, this._chPos)) {
+        tr.obj.position.set(rest.pos.x + this._chPos[0], rest.pos.y + this._chPos[1], rest.pos.z + this._chPos[2]);
+      }
+      if (this._channel(tr.rot, 'rot', tNorm, this._chRot)) {
+        tr.obj.rotation.set(rest.rot.x + this._chRot[0], rest.rot.y + this._chRot[1], rest.rot.z + this._chRot[2]);
+      }
+      if (this._channel(tr.scale, 'scale', tNorm, this._chScl)) {
+        tr.obj.scale.set(this._chScl[0], this._chScl[1], this._chScl[2]);
+      }
     }
   }
 
-  // Interpolate a channel (pos/rot/scale) at normalised time t.
-  // Returns [x,y,z] or null if no keyframe carries that channel.
-  _channel(keys, key, t) {
-    const kfs = keys.filter((k) => Array.isArray(k[key]));
-    if (kfs.length === 0) return null;
-    if (t <= kfs[0].t) return kfs[0][key];
+  // Interpolate a pre-split channel at normalised time t into `out`.
+  // Returns out, or null if the track has no keyframes for this channel.
+  _channel(kfs, key, t, out) {
+    if (!kfs || kfs.length === 0) return null;
+    if (t <= kfs[0].t) {
+      const v = kfs[0][key];
+      out[0] = v[0]; out[1] = v[1]; out[2] = v[2];
+      return out;
+    }
     const last = kfs[kfs.length - 1];
-    if (t >= last.t) return last[key];
+    if (t >= last.t) {
+      const v = last[key];
+      out[0] = v[0]; out[1] = v[1]; out[2] = v[2];
+      return out;
+    }
     for (let i = 0; i < kfs.length - 1; i++) {
       const a = kfs[i];
       const b = kfs[i + 1];
       if (t >= a.t && t <= b.t) {
         const span = b.t - a.t;
         const f = span > 1e-6 ? (t - a.t) / span : 1;
-        return [
-          a[key][0] + (b[key][0] - a[key][0]) * f,
-          a[key][1] + (b[key][1] - a[key][1]) * f,
-          a[key][2] + (b[key][2] - a[key][2]) * f,
-        ];
+        const av = a[key];
+        const bv = b[key];
+        out[0] = av[0] + (bv[0] - av[0]) * f;
+        out[1] = av[1] + (bv[1] - av[1]) * f;
+        out[2] = av[2] + (bv[2] - av[2]) * f;
+        return out;
       }
     }
-    return kfs[kfs.length - 1][key];
+    const v = last[key];
+    out[0] = v[0]; out[1] = v[1]; out[2] = v[2];
+    return out;
   }
 }
