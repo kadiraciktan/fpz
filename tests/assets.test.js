@@ -19,6 +19,7 @@ const MODEL_TEX_SIZE = {
   cal50: 32,
   lsw: 32,
   zombie: 16,
+  headcrab: 16,
   streetlamp: 16,
 };
 
@@ -57,4 +58,15 @@ test('zombie model exposes animatable part names', async () => {
   }
   assert.ok(zombieModel.anims.walk, 'zombie model should define a walk anim');
   assert.ok(zombieModel.anims.death, 'zombie model should define a death anim');
+});
+
+test('headcrab model exposes animatable part names and hop clip', async () => {
+  const { headcrabModel } = await import('../models/headcrab.js');
+  const names = headcrabModel.elements.map((e) => e.name);
+  for (const required of ['shell', 'head', 'legL', 'legR', 'armL', 'armR']) {
+    assert.ok(names.includes(required), `headcrab model missing part '${required}'`);
+  }
+  for (const clip of ['idle', 'walk', 'hop', 'attack', 'death']) {
+    assert.ok(headcrabModel.anims[clip], `headcrab model missing '${clip}' anim`);
+  }
 });

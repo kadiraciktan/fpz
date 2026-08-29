@@ -45,6 +45,19 @@ export function isSprintRound(round) {
   return round >= 7 && round % 7 === 0 && !isBossRound(round);
 }
 
+/**
+ * Headcrab incursion: every 4th round from round 4, an infestation of
+ * hopping crabs mixes into the wave. No overlap with boss/sprint rounds.
+ */
+export function isHeadcrabRound(round) {
+  return round >= 4 && round % 4 === 0 && !isBossRound(round) && !isSprintRound(round);
+}
+
+/** Share of the wave that spawns as headcrabs (0 outside incursion rounds). */
+export function headcrabChance(round) {
+  return isHeadcrabRound(round) ? Math.min(0.25 + round * 0.01, 0.45) : 0;
+}
+
 /** 0..1 music/ambience tension for the round. */
 export function waveIntensity(round) {
   return Math.min(1, round / 12);

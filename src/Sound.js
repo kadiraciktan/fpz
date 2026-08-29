@@ -486,6 +486,34 @@ export class Sfx {
     this.zombieGrowl(0.22);
   }
 
+  /** Headcrab chirp: short high-pitched shriek, classic squeaky vermin. */
+  headcrabChirp(vol = 0.22) {
+    if (!this.ctx) return;
+    const t = this._now();
+    const osc = this.ctx.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(850, t);
+    osc.frequency.exponentialRampToValueAtTime(1500, t + 0.08);
+    osc.frequency.exponentialRampToValueAtTime(480, t + 0.3);
+    const vib = this.ctx.createOscillator(); // flutter
+    vib.frequency.value = 28 + Math.random() * 10;
+    const vibG = this.ctx.createGain();
+    vibG.gain.value = 90;
+    vib.connect(vibG).connect(osc.frequency);
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = 1300;
+    bp.Q.value = 4.0;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.32);
+    osc.connect(bp).connect(g).connect(this.master);
+    osc.start(t);
+    vib.start(t);
+    osc.stop(t + 0.35);
+    vib.stop(t + 0.35);
+  }
+
   /** Bomber detonation: boom + debris crackle. */
   explosion() {
     if (!this.ctx) return;

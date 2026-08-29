@@ -7,6 +7,8 @@ import {
   isBossRound,
   bossCount,
   isSprintRound,
+  isHeadcrabRound,
+  headcrabChance,
   waveIntensity,
 } from '../src/game/waves.js';
 
@@ -56,4 +58,17 @@ test('wave intensity ramps to 1 by round 12 and clamps', () => {
   assert.equal(waveIntensity(6), 0.5);
   assert.equal(waveIntensity(12), 1);
   assert.equal(waveIntensity(50), 1);
+});
+
+test('headcrab incursions every 4th round from 4, no boss/sprint clash', () => {
+  assert.equal(isHeadcrabRound(3), false);
+  assert.equal(isHeadcrabRound(4), true);
+  assert.equal(isHeadcrabRound(6), false);
+  assert.equal(isHeadcrabRound(8), true);
+  assert.equal(isHeadcrabRound(20), false, '20 is a boss round');
+  assert.equal(isHeadcrabRound(28), false, '28 is a sprint round');
+  assert.equal(headcrabChance(4), 0.29);
+  assert.equal(headcrabChance(7), 0, 'no crabs outside incursion rounds');
+  assert.ok(headcrabChance(12) > headcrabChance(4), 'crab share grows with the round');
+  assert.ok(headcrabChance(500) <= 0.45, 'crab share caps at 0.45');
 });

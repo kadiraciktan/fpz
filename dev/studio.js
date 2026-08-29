@@ -15,10 +15,11 @@ import { rifleModel } from '../models/rifle.js';
 import { shotgunModel } from '../models/shotgun.js';
 import { thompsonModel } from '../models/thompson.js';
 import { zombieModel } from '../models/zombie.js';
+import { headcrabModel } from '../models/headcrab.js';
 import { streetLampModel } from '../models/streetlamp.js';
 import { weaponTexture } from '../textures/weapon.js';
 import { shotgunTexture } from '../textures/shotgun.js';
-import { zombieTexture } from '../textures/zombie.js';
+import { zombieTexture, headcrabTexture } from '../textures/zombie.js';
 import { woodTexture } from '../textures/wood.js';
 import { lampTexture } from '../textures/lamp.js';
 import { hudRoundTexture } from '../textures/hud-round.js';
@@ -78,12 +79,14 @@ const ASSETS = [
   { id: 'shotgun', label: 'Shotgun (M1897)', model: shotgunModel, texture: shotgunTexture, color: '#3a3a3a', height: 0.5 },
   { id: 'thompson', label: 'Thompson (M1A1)', model: thompsonModel, texture: weaponTexture, color: '#444444', height: 0.5 },
   { id: 'zombie', label: 'Zombie', model: zombieModel, texture: zombieTexture, color: '#6a5a2a', height: 1.2 },
+  { id: 'headcrab', label: 'Headcrab', model: headcrabModel, texture: headcrabTexture, color: '#c68464', height: 1.05 },
   { id: 'streetlamp', label: 'Street Lamp', model: streetLampModel, texture: lampTexture, color: '#3d443a', height: 2.5 },
 ];
 const TEX_ASSETS = [
   { id: 'weapon', label: 'weapon', tex: weaponTexture },
   { id: 'shotgun', label: 'shotgun', tex: shotgunTexture },
   { id: 'zombie', label: 'zombie', tex: zombieTexture },
+  { id: 'headcrab', label: 'headcrab', tex: headcrabTexture },
   { id: 'wood', label: 'wood', tex: woodTexture },
   { id: 'lamp', label: 'lamp', tex: lampTexture },
   { id: 'hud-round', label: 'hud-round', tex: hudRoundTexture },
@@ -157,7 +160,7 @@ function showTexture(texDef, label) {
   const ctx = canvas.getContext('2d');
   const img = ctx.createImageData(s, s);
   const palette = {};
-  for (const ch of texDef.palette) palette[ch] = new THREE.Color(ch);
+  for (const [ch, hex] of Object.entries(texDef.palette)) palette[ch] = new THREE.Color(hex);
   for (let y = 0; y < s; y++) {
     const row = texDef.pixels[s - 1 - y]; // flip Y
     for (let x = 0; x < s; x++) {
@@ -173,7 +176,7 @@ function showTexture(texDef, label) {
     }
   }
   ctx.putImageData(img, 0, 0);
-  labelEl.textContent = `${label} — ${s}×${s} px (${texDef.palette.length} colors)`;
+  labelEl.textContent = `${label} — ${s}×${s} px (${Object.keys(texDef.palette).length} colors)`;
 }
 
 // --- Sidebar build -----------------------------------------------------------

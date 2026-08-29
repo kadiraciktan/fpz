@@ -36,7 +36,7 @@ python3 -m http.server 8080
 │   │   └── waves.js        #   Pure wave scaling + special round formulas
 │   ├── ui/
 │   │   └── gunsmith.js     #   Gunsmith screen (preview renderer, cards)
-│   ├── Enemy.js            # Zombie AI: walk/attack/death + Animator
+│   ├── Enemy.js            # Zombie AI: walk/attack/death + Animator (+ hopping headcrab mode)
 │   ├── ModelLoader.js      # buildModel() + buildTexture() pipeline
 │   ├── Animation.js        # Keyframe Animator (pos/rot/scale, lerp, onEnd)
 │   ├── Sound.js            # Web Audio procedural SFX + tension music
@@ -51,13 +51,14 @@ python3 -m http.server 8080
 │   ├── cal50.js            # .50 CAL rifle (CoD-style) — 11 parts, bipod
 │   ├── lsw.js              # LSW LMG (CoD-style) — 11 parts, box mag
 │   ├── zombie.js           # 4 parts (legs, body, head, arms) + 4 anims
+│   ├── headcrab.js         # 6 parts (shell, head, legs, claws) + 5 anims
 │   ├── hands.js            # First-person hands viewmodel + reload clips
 │   ├── legs.js             # First-person legs (thigh/shin/boot)
 │   └── streetlamp.js       # 5-part prop
 ├── textures/
 │   ├── weapon.js           # 32×32 gun sprite atlas
 │   ├── shotgun.js          # 32×32 trench gun texture
-│   ├── zombie.js           # 16×16 zombie skin (flesh/mouth/gore)
+│   ├── zombie.js           # 16×16 skins: zombie + sprinter/brute/bomber/headcrab variants
 │   ├── hands.js            # 16×16 hands/sleeves
 │   ├── legs.js             # 16×16 legs/boot
 │   ├── wood.js             # 16×16 wood grain
@@ -249,6 +250,9 @@ wait for a drop:
 - **Boss round** — every 5th round from round 5 (two from round 15): huge red
   elites (x10 HP, x2 damage, 500 pts, MAX drop)
 - **Sprint round** — every 7th round: the horde is 100% sprinters
+- **Headcrab incursion** — every 4th round from round 4: a pack of hopping
+  headcrabs (Half-Life-style) mixes into the wave — fast, low HP, they pounce
+  at your feet in short leaps
 - Wave formulas live in `src/game/waves.js` (unit-tested)
 
 ## Mystery Box (CoD-style loot table)

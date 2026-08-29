@@ -2,25 +2,29 @@ import * as THREE from 'three';
 import { buildModel } from './ModelLoader.js';
 import { Animator } from './Animation.js';
 import { zombieModel } from '../models/zombie.js';
-import { zombieTexture, zombieSprinterTexture, zombieBruteTexture, zombieBomberTexture } from '../textures/zombie.js';
+import { headcrabModel } from '../models/headcrab.js';
+import { zombieTexture, zombieSprinterTexture, zombieBruteTexture, zombieBomberTexture, headcrabTexture } from '../textures/zombie.js';
 
 /**
  * Enemy.js
  * Zombie AI with type variants, lure distractions, whisker steering around
  * obstacles, horde separation, stuck recovery and mesh pooling (groups are
- * recycled across waves instead of rebuilt).
+ * recycled across waves instead of being rebuilt).
  */
 
 /**
  * Zombie type presets. Multipliers apply over the base params; `texture`
- * swaps in a dedicated skin, `score` is the kill reward.
- *  bomber detonates when the player gets too close — keep your distance!
+ * swaps in a dedicated skin, `model` swaps the whole body, `score` is the
+ * kill reward.
+ *  bomber   detonates when the player gets too close — keep your distance!
+ *  headcrab hops in fast, low arcs at the player's feet — squishy but fast!
  */
 export const ENEMY_TYPES = {
   normal: { score: 60 },
   sprinter: { speedMul: 2.1, healthMul: 0.6, scale: 0.85, texture: zombieSprinterTexture, score: 70 },
   brute: { speedMul: 0.55, healthMul: 3.2, damageMul: 2, scale: 1.45, texture: zombieBruteTexture, score: 130 },
   bomber: { speedMul: 1.15, healthMul: 1, scale: 1.1, texture: zombieBomberTexture, explosive: true, detonateRange: 2.3, score: 90 },
+  headcrab: { speedMul: 1.6, healthMul: 0.5, scale: 0.5, attackRange: 0.9, model: headcrabModel, texture: headcrabTexture, hopper: true, score: 45 },
   boss: { speedMul: 0.8, healthMul: 10, damageMul: 2, scale: 2.1, texture: zombieBruteTexture, tint: 0xff7050, score: 500 },
 };
 
@@ -58,9 +62,16 @@ export class Enemy {
     this.params.speed *= 0.9 + Math.random() * 0.2;
     this.params.health *= v.healthMul ?? 1;
     this.params.damage *= v.damageMul ?? 1;
+    if (v.attackRange) this.params.attackRange = v.attackRange;
     // Explosive flag comes from the preset only (options spread above can't
     // accidentally arm a non-bomber).
     this.params.explosive = !!v.explosive;
+    // Hoppers (headcrabs) travel in ballistic arcs instead of walking.
+    this.hopper = !!v.hopper;
+    this._airborne = false;
+    this._hopVy = 0;
+    this._hopWait = Math.random() * 0.4;
+    this._hopDir = new THREE.Vector3(0, 0, 1);
 
     this.health = this.params.health;
     this.alive = true;
@@ -79,8 +90,9 @@ export class Enemy {
     this._prevX = spawnPos.x;
     this._prevZ = spawnPos.z;
 
-    // Build (or recycle) the zombie group from this type's skin pool.
+    // Build (or recycle) the group from this type's skin pool.
     this._meshes = [];
+    this._modelDef = v.model || zombieModel;
     this._texDef = v.texture || zombieTexture;
     let pool = pools.get(this._texDef);
     if (!pool) {
@@ -92,7 +104,7 @@ export class Enemy {
       this.group = pooled;
       this._resetPooled();
     } else {
-      this.group = buildModel(zombieModel, this._texDef);
+      this.group = buildModel(this._modelDef, this._texDef);
       // Clone materials so hit-flash/tint on this zombie doesn't affect
       // others (buildModel caches one material per texture).
       this.group.traverse((o) => {
@@ -121,7 +133,7 @@ export class Enemy {
     this._getPeers = options.getPeers || null;
 
     // Keyframe animations (idle / walk / attack / death)
-    this.animator = new Animator(this.group, zombieModel.anims);
+    this.animator = new Animator(this.group, this._modelDef.anims);
     this.animator.play('idle');
   }
 
@@ -180,6 +192,22 @@ export class Enemy {
       this._kb.multiplyScalar(Math.max(0, 1 - dt * 10));
     }
 
+    // Hopper ballistics run every tick (even mid-death) so a crab shot out
+    // of the air drops to the ground instead of hovering.
+    if (this.hopper && this._airborne) {
+      const p = this.group.position;
+      this._hopVy -= 13 * dt;
+      p.y = Math.max(0, p.y + this._hopVy * dt);
+      p.addScaledVector(this._hopDir, this.params.speed * dt);
+      this._collideObstacles();
+      if (p.y <= 0) {
+        p.y = 0;
+        this._hopVy = 0;
+        this._airborne = false;
+        this._hopWait = 0.2 + Math.random() * 0.35;
+      }
+    }
+
     if (this.dying) {
       // Death animation is playing; main loop removes us when it finishes.
       this.animator.update(dt);
@@ -219,21 +247,27 @@ export class Enemy {
 
     if (target === playerPos && dist > this.params.attackRange) {
       dir.normalize();
-      const steer = this._steer(pos, dir);
-      this.group.position.addScaledVector(steer, this.params.speed * dt);
-      this._collideObstacles();
-      this._separate();
-      this._collideObstacles();
-      this._watchStuck(dt, dir);
-      this._chewSandbags(dt, dir);
+      if (this.hopper) {
+        // Grounded between hops: wait out the cooldown, then pounce.
+        // The ballistics block at the top of update() carries us in flight.
+        if (!this._airborne) this._creepOrHop(dt, dir, dist);
+      } else {
+        const steer = this._steer(pos, dir);
+        this.group.position.addScaledVector(steer, this.params.speed * dt);
+        this._collideObstacles();
+        this._separate();
+        this._collideObstacles();
+        this._watchStuck(dt, dir);
+        this._chewSandbags(dt, dir);
 
-      // Face where we're actually walking (drifts off at corners)
-      this.group.rotation.y = Math.atan2(steer.x, steer.z);
+        // Face where we're actually walking (drifts off at corners)
+        this.group.rotation.y = Math.atan2(steer.x, steer.z);
 
-      // Walking animation
-      if (this._currentAnim !== 'walk') {
-        this.animator.play('walk');
-        this._currentAnim = 'walk';
+        // Walking animation
+        if (this._currentAnim !== 'walk') {
+          this.animator.play('walk');
+          this._currentAnim = 'walk';
+        }
       }
       this.animator.update(dt);
     } else if (target === playerPos) {
@@ -288,6 +322,41 @@ export class Enemy {
     }
 
     return damaged;
+  }
+
+  /**
+   * Grounded hopper step: launch a ballistic pounce at the player, or —
+   * once close enough that a leap would overshoot — creep the last stretch
+   * at a low crawl.
+   */
+  _creepOrHop(dt, dir, dist) {
+    this._hopWait -= dt;
+    if (dist > 2.2 && this._hopWait <= 0) {
+      // Faster crabs (late rounds) get a lower, snappier arc so the jump
+      // length stays roughly constant as the wave speed ramps up.
+      this._hopVy = Math.min(4.2, Math.max(2.2, 12 / this.params.speed));
+      const steer = this._steer(this.group.position, dir);
+      this._hopDir.copy(steer);
+      this.group.rotation.y = Math.atan2(steer.x, steer.z);
+      this._airborne = true;
+      this.animator.play('hop', { loop: false });
+      this._currentAnim = 'hop';
+      return;
+    }
+    if (dist > this.params.attackRange * 1.2) {
+      const steer = this._steer(this.group.position, dir);
+      this.group.position.addScaledVector(steer, this.params.speed * 0.45 * dt);
+      this._collideObstacles();
+      this._separate();
+      this._collideObstacles();
+      this._watchStuck(dt, dir);
+      this._chewSandbags(dt, dir);
+      this.group.rotation.y = Math.atan2(steer.x, steer.z);
+      if (this._currentAnim !== 'walk') {
+        this.animator.play('walk');
+        this._currentAnim = 'walk';
+      }
+    }
   }
 
   /**

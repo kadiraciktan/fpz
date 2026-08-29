@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { buildModel } from './ModelLoader.js';
 import { woodTexture } from '../textures/wood.js';
-import { lamp } from '../textures/lamp.js';
+import { lampTexture } from '../textures/lamp.js';
 import { streetLampModel } from '../models/streetlamp.js';
 
 /**
@@ -214,7 +214,7 @@ export function createImpact() {
  * @returns {THREE.Group}
  */
 export function createStreetLamp(withLight = true) {
-  const group = buildModel(streetLampModel, lamp);
+  const group = buildModel(streetLampModel, lampTexture);
 
   // Emissive bulb material override (mesh carries userData.partName after pivot restructure)
   group.traverse((o) => {

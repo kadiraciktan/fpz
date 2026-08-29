@@ -1,4 +1,4 @@
-export const lamp = {
+export const lampTexture = {
   size: 16,
   palette: {
     '.': '#000000',

@@ -5,6 +5,7 @@
  *  sprinter  — pale, sickly, clothes ripped to shreds
  *  brute     — dark bloated muscle, heavily torn dark shirt
  *  bomber    — rusty orange flesh with glowing volatile pustules
+ *  headcrab  — pink-brown dome with pale mouth-plate
  */
 export const zombieTexture = {
   size: 16,
@@ -100,6 +101,39 @@ export const zombieBruteTexture = {
     'KKBBBBBBBBBBBKKK',
     'KBDDDDDDDDDDDDBK',
     'KBDBBBBBBBBBBDBK',
+    'KKKKKKKKKKKKKKKK',
+  ],
+};
+
+/** Headcrab: pink-brown dome, pale mouth-plate, dark whip legs. */
+export const headcrabTexture = {
+  size: 16,
+  palette: {
+    K: '#1a0f0a', // outline
+    P: '#c68464', // shell pink
+    O: '#e09a6a', // shell highlight
+    D: '#8a4f3a', // shell bruise
+    W: '#e8cfae', // pale underside
+    M: '#2a150f', // mouth / fang line
+    L: '#6a4030', // leg brown
+    N: '#42250f', // leg dark
+  },
+  pixels: [
+    'KKKKKKKKKKKKKKKK',
+    'KPPPPPPPPPPPPPPK',
+    'KPOPPDPPPPPDPPPK',
+    'KPDDPPPOPPPPDPPK',
+    'KPPPPPPPPDPPPPPK',
+    'KKKKKKKKKKKKKKKK',
+    'KWWWWWWWWWWWWWWK',
+    'KWMMWWWWWWWWMMWK',
+    'KWWMMWWMMWWWWWWK',
+    'KWWWWMMMMWWWWWWK',
+    'KLNLLNLLLLNLLNLK',
+    'KLLLLLLLLLLLLLLK',
+    'KNNLLNNLLLLLLNNK',
+    'KLLLLDLLLLLLDLLK',
+    'KLLLLLLLLDLLLLLK',
     'KKKKKKKKKKKKKKKK',
   ],
 };

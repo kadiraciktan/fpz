@@ -6,7 +6,7 @@ import { createGunsmithScreen } from './ui/gunsmith.js';
 import { Enemy } from './Enemy.js';
 import { createSandbag, createPerkMachine, markMachineSold } from './Prefabs.js';
 import { GamepadInput, GamepadMenuNav } from './Gamepad.js';
-import { waveCount, waveParams, pickEnemyType, isBossRound, bossCount, isSprintRound, waveIntensity } from './game/waves.js';
+import { waveCount, waveParams, pickEnemyType, isBossRound, bossCount, isSprintRound, isHeadcrabRound, headcrabChance, waveIntensity } from './game/waves.js';
 import { weightedPick } from './weapons/ammo.js';
 
 /**
@@ -313,18 +313,23 @@ function spawnWave() {
   weaponManager.sfx.setMusicIntensity(waveIntensity(round));
   const boss = isBossRound(round);
   const sprint = isSprintRound(round);
+  const crabs = isHeadcrabRound(round);
   gamepad.rumble(0.4, 0.6, 220);
   showToast(
     boss ? `WAVE ${round} - PATRON!`
       : sprint ? `WAVE ${round} - SPRINT DALGASI!`
-        : `Wave ${round}`
+        : crabs ? `WAVE ${round} - HEADCRAB İSTİLASI!`
+          : `Wave ${round}`
   );
   const count = waveCount(round);
   const { hp, spd, dmg } = waveParams(round);
   for (let i = 0; i < count; i++) {
     const pos = findSpawnPos();
-    // Type mix gets nastier with the round (pure sprinters on sprint rounds).
-    const type = sprint ? 'sprinter' : pickEnemyType(round, Math.random());
+    // Type mix gets nastier with the round (pure sprinters on sprint rounds,
+    // a crab infestation mixed in on incursion rounds).
+    const type = sprint ? 'sprinter'
+      : crabs && Math.random() < headcrabChance(round) ? 'headcrab'
+        : pickEnemyType(round, Math.random());
     const enemy = new Enemy(scene, pos, {
       type,
       speed: spd,
@@ -628,7 +633,8 @@ function buildGame() {
       if (isHeadshot) stats.headshots++;
       if (stats.kills % 5 === 0) savePersisted();
       weaponManager.sfx.enemyDeath();
-      weaponManager.sfx.zombieScream();
+      if (enemy.type === 'headcrab') weaponManager.sfx.headcrabChirp(0.3);
+      else weaponManager.sfx.zombieScream();
       enemy.startDeath();
       // Remove from targets immediately so it can't be shot again
       weaponManager.setTargets(enemies.filter(e => e.alive).map(e => e.group));
@@ -1128,7 +1134,11 @@ function animate() {
       const d = e.group.position.distanceTo(controller.position);
       if (d < nearD) { nearD = d; nearest = e; }
     }
-    if (nearest) weaponManager.sfx.zombieGrowl(THREE.MathUtils.clamp(0.35 * (1 - nearD / 22), 0.05, 0.35));
+    if (nearest) {
+      const vol = THREE.MathUtils.clamp(0.35 * (1 - nearD / 22), 0.05, 0.35);
+      if (nearest.type === 'headcrab') weaponManager.sfx.headcrabChirp(vol);
+      else weaponManager.sfx.zombieGrowl(vol);
+    }
   }
 
   // Critical-HP heartbeat: thump + red vignette pulse.
