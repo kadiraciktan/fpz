@@ -21,10 +21,14 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+        with:
+          # First run: create the Pages site if Settings hasn't been flipped yet.
+          # If this still 404s, set Settings → Pages → Source to GitHub Actions.
+          enablement: true
+      - uses: actions/upload-pages-artifact@v4
         with:
           path: .
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
