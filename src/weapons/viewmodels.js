@@ -80,6 +80,10 @@ export function createGunMesh(def) {
 
   group.userData.type = 'gun';
   group.userData.muzzle = muzzle;
+  // Rearmost solid extent (stock/buttplate) in gun-local space. The ADS
+  // pose uses this to keep long stocks clear of the camera near plane
+  // instead of filling the screen while aiming down sights.
+  group.userData.stockRear = model.elements.reduce((m, el) => Math.max(m, el.to[2]), 0);
 
   // Attach Animator for keyframe-based fire/reload animations
   if (model.anims) {

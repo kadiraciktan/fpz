@@ -20,6 +20,7 @@ import {
   buildAttachmentMeshes,
   buildIronSights,
   opticSightHeight,
+  opticSightDepth,
 } from './weapons/attachments.js';
 import {
   applyViewmodelSettings,
@@ -43,6 +44,10 @@ import {
  * Firing / reloading / ADS are locked for the whole duration.
  */
 const SWAP_TIME = 0.45;
+/** Min distance the rearmost part of the gun keeps from the eye while ADS. */
+const ADS_STOCK_CLEAR = 0.22;
+/** Cheek-weld muzzle-up pitch while aiming down an optic (radians). */
+const ADS_STOCK_TUCK = 0.045;
 /** Fraction of SWAP_TIME spent lowering (the mesh swap happens at its end). */
 const SWAP_LOWER = 0.5;
 /** Seconds left on the clock when the meshes are exchanged. */
@@ -730,12 +735,29 @@ export class WeaponManager {
     // lands on EXACT screen center — bullets always raycast from (0,0), so
     // anything else makes the dot lie about where the shot goes.
     const sightY = this._aiming && optic ? opticSightHeight(w.def.name, optic) : null;
+    // Ads-forward distance: long stocks (Garand .39, BAR .42) would put the
+    // buttplate within the camera near plane at the stock -0.45 pose, so the
+    // giant clipped wedge fills the sight picture. Keep the rearmost solid
+    // part of the gun at least ADS_STOCK_CLEAR metres in front of the eye.
+    const stockRear = gun.userData.stockRear || 0;
+    const aimZ = Math.min(-0.45, -ADS_STOCK_CLEAR - stockRear);
     const [ax, ay, az] = scoped
       ? [0, -0.8, -0.5]
       : this._aiming && sightY != null
-        ? [0, -sightY, -0.45]
-        : this._aiming ? [0, -0.12, -0.45] : [0.25, -0.2, -0.5];
+        ? [0, -sightY, aimZ]
+        : this._aiming ? [0, -0.12, aimZ] : [0.25, -0.2, -0.5];
     let bx = ax, by = ay, bz = az, brx = 0, brz = 0;
+    // Cheek-weld pitch while aiming down an optic: tip the muzzle up so the
+    // stock swings DOWN out of the sight line (it stays fully visible, just
+    // below the reticle instead of filling it). Re-seat the gun vertically
+    // so the optic's reticle still lands on exact screen centre (bullets
+    // raycast from (0,0)) despite the added pitch.
+    if (this._aiming && optic && sightY != null && !scoped) {
+      const pitch = ADS_STOCK_TUCK;
+      const zc = opticSightDepth(w.def.name); // optic sits forward of the pivot (negative z)
+      brx = pitch;
+      by = -(sightY * Math.cos(pitch) - zc * Math.sin(pitch));
+    }
     if (w.reloading) {
       const total = w.reloadDur || w.def.reloadTime;
       const t = Math.min(1, (total - w.reloadTimer) / total);

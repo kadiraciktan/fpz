@@ -127,6 +127,12 @@ export function opticSightHeight(weaponName, optic) {
   return off != null ? A.bodyTop + off : null;
 }
 
+/** Mount depth (z along the gun) of the optic — the ADS tilt pivots on it. */
+export function opticSightDepth(weaponName) {
+  const A = ATTACH_ANCHORS[weaponName] || ATTACH_ANCHORS.Pistol;
+  return A.scopeZ ?? 0;
+}
+
 /**
  * Visual mesh for each optic, seated on the receiver-top mount anchor.
  * All glass is opaque (viewmodel rule); reticles are emissive meshes.
