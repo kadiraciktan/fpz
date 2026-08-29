@@ -51,6 +51,16 @@ export class FPSController {
     this.onGround = false;
     this.position = new THREE.Vector3(0, this.params.eyeHeight, 0);
 
+    // Reused scratch transforms (update() runs every frame — stay allocation-free)
+    this._euler = new THREE.Euler(0, 0, 0, 'YXZ');
+    this._eulerRoll = new THREE.Euler(0, 0, 0, 'XYZ');
+    this._rollQuat = new THREE.Quaternion();
+    this._forwardV = new THREE.Vector3();
+    this._rightV = new THREE.Vector3();
+    this._moveV = new THREE.Vector3();
+    this._slideDirV = new THREE.Vector3();
+    this._muzzleV = new THREE.Vector3();
+
     // Input state
     this.keys = {};
     this.mouse = { x: 0, y: 0 };
@@ -222,9 +232,8 @@ export class FPSController {
       -Math.PI / 2 + 0.01,
       Math.min(Math.PI / 2 - 0.01, this._pitch)
     );
-    this.camera.quaternion.setFromEuler(
-      new THREE.Euler(this._pitch, this._yaw, 0, 'YXZ')
-    );
+    this._euler.set(this._pitch, this._yaw, 0, 'YXZ');
+    this.camera.quaternion.setFromEuler(this._euler);
     if (Math.abs(this._cameraRecoil) > 0.0005) {
       this.camera.rotateX(this._cameraRecoil);
       this._cameraRecoil = THREE.MathUtils.lerp(this._cameraRecoil, 0, 0.25);
@@ -240,14 +249,14 @@ export class FPSController {
     this.mouse.y = 0;
 
     // --- Movement input ---
-    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
+    const forward = this._forwardV.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
     forward.y = 0;
     forward.normalize();
-    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion);
+    const right = this._rightV.set(1, 0, 0).applyQuaternion(this.camera.quaternion);
     right.y = 0;
     right.normalize();
 
-    const move = new THREE.Vector3();
+    const move = this._moveV.set(0, 0, 0);
     if (this.keys['KeyW']) move.add(forward);
     if (this.keys['KeyS']) move.sub(forward);
     if (this.keys['KeyD']) move.add(right);
@@ -280,8 +289,8 @@ export class FPSController {
       // Kick off along the current travel direction, or straight ahead
       // when starting from a standstill-ish state.
       const dir = horizSpeed > 1.5
-        ? new THREE.Vector3(this.velocity.x, 0, this.velocity.z).normalize()
-        : forward.clone();
+        ? this._slideDirV.set(this.velocity.x, 0, this.velocity.z).normalize()
+        : this._slideDirV.copy(forward);
       this.velocity.x = dir.x * this.params.slideSpeed;
       this.velocity.z = dir.z * this.params.slideSpeed;
     }
@@ -363,7 +372,7 @@ export class FPSController {
     // Roll bobbing applied via quaternion to stay in sync with setFromEuler
     const roll = Math.sin(this._cameraBobTime * 0.5) * 0.004 * bobScale;
     this.camera.quaternion.multiply(
-      new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, roll, 'XYZ'))
+      this._rollQuat.setFromEuler(this._eulerRoll.set(0, 0, roll, 'XYZ'))
     );
 
     // --- First-person legs: step when moving, settle when still ---
@@ -482,11 +491,14 @@ export class FPSController {
 
   /**
    * Get the world position of the muzzle (for tracers).
+   * NOTE: returns a reused scratch vector — consume it immediately.
    * @returns {THREE.Vector3}
    */
   getMuzzlePosition() {
-    if (!this.gun) return this.camera.position.clone();
+    if (!this.gun) return this._muzzleV.copy(this.camera.position);
     const muzzle = this.gun.userData.muzzle;
-    return muzzle ? muzzle.getWorldPosition(new THREE.Vector3()) : this.camera.position.clone();
+    return muzzle
+      ? muzzle.getWorldPosition(this._muzzleV)
+      : this._muzzleV.copy(this.camera.position);
   }
 }

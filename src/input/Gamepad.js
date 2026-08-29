@@ -28,6 +28,11 @@ export class GamepadInput {
     this.connected = false;
     /** Most recently read pad — kept live even from menu polling (rumble). */
     this.lastPad = null;
+    // getGamepads() + filter allocates twice per frame; the pad list only
+    // changes on hot-plug, so cache the pick briefly (Gamepad objects are
+    // live views — button state still updates every read).
+    this._padCache = null;
+    this._padCacheAt = -1e9;
   }
 
   /**
@@ -35,10 +40,21 @@ export class GamepadInput {
    * receivers often expose phantom pads at index 0, which broke RT reads.
    */
   pickPad() {
-    const pads = navigator.getGamepads ? [...navigator.getGamepads()] : [];
-    const live = pads.filter(Boolean);
-    if (!live.length) return null;
-    return live.find((p) => p.mapping === 'standard') || live[0];
+    const now = performance.now();
+    if (now - this._padCacheAt > 100) {
+      this._padCacheAt = now;
+      const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+      let std = null;
+      let first = null;
+      for (let i = 0; i < pads.length; i++) {
+        const p = pads[i];
+        if (!p) continue;
+        if (!first) first = p;
+        if (p.mapping === 'standard') { std = p; break; }
+      }
+      this._padCache = std || first;
+    }
+    return this._padCache;
   }
 
   /**

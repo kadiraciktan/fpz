@@ -26,6 +26,16 @@ export function insertHash(map, x, z, cellSize, item) {
 }
 
 /**
+ * Empty every bucket WITHOUT dropping the arrays — the buckets stay in the
+ * map so a per-frame rebuild (insertHash) reuses them instead of allocating
+ * one array per occupied cell every tick.
+ */
+export function resetHash(map) {
+  for (const bucket of map.values()) bucket.length = 0;
+  return map;
+}
+
+/**
  * Collect items in the Moore neighbourhood of (x, z).
  * Reuses `out` (cleared first) so the query is allocation-free.
  */

@@ -700,11 +700,32 @@ export class Sfx {
   }
 
   /**
-   * Generate a white-noise buffer.
+   * White-noise buffer — cached. Shooting used to fill a brand-new random
+   * buffer (Math.random × 44k samples × 3) on every layer of every shot.
+   * Several per-second-rounded variants per length keep repeats from
+   * sounding identical during full-auto.
    * @param {number} seconds
    * @param {boolean} [loop] - mark as loopable (ambience)
    */
   _noiseBuffer(seconds, loop = false) {
+    if (loop) {
+      if (!this._loopNoise) this._loopNoise = this._makeNoise(seconds);
+      return this._loopNoise;
+    }
+    if (!this._noiseCache) this._noiseCache = new Map();
+    const key = Math.max(1, Math.ceil(seconds * 20)); // 50 ms buckets (rounded up)
+    let variants = this._noiseCache.get(key);
+    if (!variants) {
+      const dur = key / 20;
+      variants = [this._makeNoise(dur), this._makeNoise(dur), this._makeNoise(dur)];
+      this._noiseCache.set(key, variants);
+    }
+    this._noiseVariant = ((this._noiseVariant || 0) + 1) % variants.length;
+    return variants[this._noiseVariant];
+  }
+
+  /** Fresh random white-noise buffer of the given length. */
+  _makeNoise(seconds) {
     const rate = this.ctx.sampleRate;
     const len = Math.max(1, Math.floor(rate * seconds));
     const buf = this.ctx.createBuffer(1, len, rate);

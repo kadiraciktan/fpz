@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { buildModel } from '../gfx/ModelLoader.js';
 import { Animator } from '../anims/Animation.js';
 import { BARRIER_CHEW_RATE } from './zombies.js';
-import { insertHash, queryHash } from './spatial.js';
+import { insertHash, resetHash, queryHash, cellKey } from './spatial.js';
 import { circleHitsOBB, resolveCircleOBB } from './collision.js';
 import { zombieModel } from '../../models/zombie.js';
 import { headcrabModel } from '../../models/headcrab.js';
@@ -47,6 +47,82 @@ const _resolveOut = { x: 0, z: 0 };
 
 /** Shared per-frame crowd index + tall-obstacle cache (filled by prepareFrame). */
 const crowd = { hash: new Map(), cell: 2, tall: [], near: [] };
+
+/**
+ * Static-grid broad phase over the tall obstacles, rebuilt once per tick
+ * (prepareFrame). Without it every whisker probe scanned ALL obstacles —
+ * with a 50-zombie horde and 200+ walls that is hundreds of thousands of
+ * OBB tests per frame. Cell 4 m keeps each probe to a handful of hits.
+ */
+const OB_CELL = 4;
+const obGrid = { map: new Map(), near: [] };
+const _obBox = { minX: 0, maxX: 0, minZ: 0, maxZ: 0 };
+
+function obWorldAABB(obs) {
+  const col = obs.userData.collision;
+  const sx = col.size.x / 2;
+  const sz = col.size.z / 2;
+  const a = obs.rotation ? obs.rotation.y : 0;
+  const c = Math.abs(Math.cos(a));
+  const s = Math.abs(Math.sin(a));
+  const ex = c * sx + s * sz;
+  const ez = s * sx + c * sz;
+  _obBox.minX = obs.position.x - ex;
+  _obBox.maxX = obs.position.x + ex;
+  _obBox.minZ = obs.position.z - ez;
+  _obBox.maxZ = obs.position.z + ez;
+  return _obBox;
+}
+
+function buildObstacleGrid(tall) {
+  resetHash(obGrid.map);
+  for (let i = 0; i < tall.length; i++) {
+    const obs = tall[i];
+    if (!obs.userData.collision) continue;
+    const b = obWorldAABB(obs);
+    const cx0 = Math.floor(b.minX / OB_CELL);
+    const cx1 = Math.floor(b.maxX / OB_CELL);
+    const cz0 = Math.floor(b.minZ / OB_CELL);
+    const cz1 = Math.floor(b.maxZ / OB_CELL);
+    for (let cx = cx0; cx <= cx1; cx++) {
+      for (let cz = cz0; cz <= cz1; cz++) {
+        const key = cellKey(cx, cz);
+        let bucket = obGrid.map.get(key);
+        if (!bucket) {
+          bucket = [];
+          obGrid.map.set(key, bucket);
+        }
+        if (bucket[bucket.length - 1] !== obs) bucket.push(obs);
+      }
+    }
+  }
+}
+
+/** Obstacles whose cell touches (x,z) within radius r — allocation-free. */
+let obQueryStamp = 0;
+function nearbyObstacles(x, z, r) {
+  const out = obGrid.near;
+  out.length = 0;
+  if (obGrid.map.size === 0) return out;
+  obQueryStamp++;
+  const cx0 = Math.floor((x - r) / OB_CELL);
+  const cx1 = Math.floor((x + r) / OB_CELL);
+  const cz0 = Math.floor((z - r) / OB_CELL);
+  const cz1 = Math.floor((z + r) / OB_CELL);
+  for (let cx = cx0; cx <= cx1; cx++) {
+    for (let cz = cz0; cz <= cz1; cz++) {
+      const bucket = obGrid.map.get(cellKey(cx, cz));
+      if (!bucket) continue;
+      for (let i = 0; i < bucket.length; i++) {
+        const obs = bucket[i];
+        if (obs._obQueryStamp === obQueryStamp) continue; // spans several cells
+        obs._obQueryStamp = obQueryStamp;
+        out.push(obs);
+      }
+    }
+  }
+  return out;
+}
 
 export class Enemy {
   /**
@@ -155,8 +231,12 @@ export class Enemy {
     // Lazy accessor for the live enemy list (used for crowding/avoidance).
     this._getPeers = options.getPeers || null;
 
-    // Keyframe animations (idle / walk / attack / death)
-    this.animator = new Animator(this.group, this._modelDef.anims);
+    // Keyframe animations (idle / walk / attack / death). Pooled groups
+    // carry their compiled Animator along — rebuilding it per spawn re-snap
+    // shot rest poses and re-compiled every clip (a 30-50× wave-start hitch).
+    this.animator = this.group.userData.animator
+      || (this.group.userData.animator = new Animator(this.group, this._modelDef.anims));
+    if (pooled) this.animator.captureRest('root');
     this.animator.play('idle');
   }
 
@@ -166,7 +246,7 @@ export class Enemy {
    */
   static prepareFrame(enemies, obstacles) {
     const hash = crowd.hash;
-    hash.clear();
+    resetHash(hash);
     const cell = crowd.cell;
     for (let i = 0; i < enemies.length; i++) {
       const e = enemies[i];
@@ -182,6 +262,34 @@ export class Enemy {
         const col = obs.userData.collision;
         if (col && col.size.y > 0.8) tall.push(obs);
       }
+    }
+    buildObstacleGrid(tall);
+  }
+
+  /**
+   * Pre-build pooled groups during the quiet prep phase so a wave spawn
+   * never pays buildModel + material.clone + Animator costs mid-frame.
+   * Builds at most `n` groups per call, round-robin across skins.
+   */
+  static prewarm(n = 2) {
+    const types = Object.values(ENEMY_TYPES);
+    for (let k = 0; k < n; k++) {
+      Enemy._prewarmI = ((Enemy._prewarmI || 0) + 1) % types.length;
+      const v = types[Enemy._prewarmI];
+      const tex = v.texture || zombieTexture;
+      let pool = pools.get(tex);
+      if (!pool) {
+        pool = [];
+        pools.set(tex, pool);
+      }
+      if (pool.length >= 10) continue;
+      const model = v.model || zombieModel;
+      const group = buildModel(model, tex);
+      group.traverse((o) => {
+        if (o.isMesh) o.material = o.material.clone();
+      });
+      group.userData.animator = new Animator(group, model.anims);
+      pool.push(group);
     }
   }
 
@@ -435,18 +543,30 @@ export class Enemy {
   /**
    * Push the zombie out of tall static obstacles (buildings, crates,
    * sandbags). Low rubble (<0.8 m) is walkable and skipped, same rule as
-   * the player controller.
+   * the player controller. Uses the static grid so a probe only touches
+   * the obstacles in the zombie's neighbourhood.
    */
   _collideObstacles() {
-    const cached = crowd.tall.length > 0;
-    const list = cached ? crowd.tall : this._obstacles;
-    if (!list) return;
     const p = this.group.position;
     const r = 0.26;
+    if (obGrid.map.size > 0) {
+      const list = nearbyObstacles(p.x, p.z, r);
+      for (let i = 0; i < list.length; i++) {
+        const obs = list[i];
+        if (!obs.userData.collision) continue;
+        if (resolveCircleOBB(p.x, p.z, r, obs, _resolveOut)) {
+          p.x = _resolveOut.x;
+          p.z = _resolveOut.z;
+        }
+      }
+      return;
+    }
+    const list = this._obstacles;
+    if (!list) return;
     for (let i = 0; i < list.length; i++) {
       const obs = list[i];
       const col = obs.userData.collision;
-      if (!col || (!cached && col.size.y <= 0.8)) continue;
+      if (!col || col.size.y <= 0.8) continue;
       if (resolveCircleOBB(p.x, p.z, r, obs, _resolveOut)) {
         p.x = _resolveOut.x;
         p.z = _resolveOut.z;
@@ -487,14 +607,29 @@ export class Enemy {
 
   /** True if the probe points at half/full `look` ahead hit a tall obstacle. */
   _blockedAhead(p, dx, dz, look) {
-    const cached = crowd.tall.length > 0;
-    const list = cached ? crowd.tall : this._obstacles;
-    if (!list) return false;
     const r = 0.26;
+    if (obGrid.map.size > 0) {
+      // One cell query covering both probe points (half + full look ahead).
+      const fx = p.x + dx * look;
+      const fz = p.z + dz * look;
+      const mx = (p.x + fx) * 0.5;
+      const mz = (p.z + fz) * 0.5;
+      const halfSpan = look * 0.5 + r + 0.01;
+      const list = nearbyObstacles(mx, mz, halfSpan);
+      for (let i = 0; i < list.length; i++) {
+        const obs = list[i];
+        if (!obs.userData.collision) continue;
+        if (circleHitsOBB(fx, fz, r, obs)) return true;
+        if (circleHitsOBB(p.x + dx * look * 0.5, p.z + dz * look * 0.5, r, obs)) return true;
+      }
+      return false;
+    }
+    const list = this._obstacles;
+    if (!list) return false;
     for (let i = 0; i < list.length; i++) {
       const obs = list[i];
       const col = obs.userData.collision;
-      if (!col || (!cached && col.size.y <= 0.8)) continue;
+      if (!col || col.size.y <= 0.8) continue;
       if (circleHitsOBB(p.x + dx * look, p.z + dz * look, r, obs)) return true;
       if (circleHitsOBB(p.x + dx * look * 0.5, p.z + dz * look * 0.5, r, obs)) return true;
     }

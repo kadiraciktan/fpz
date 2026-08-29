@@ -17,6 +17,7 @@ export const QUALITY_PRESETS = {
     shadowCutoff: 16,
     enemyShadowCutoff: 12,
     shadowInterval: 0,
+    pointPool: 3,
   },
   med: {
     key: 'med',
@@ -30,6 +31,7 @@ export const QUALITY_PRESETS = {
     shadowCutoff: 26,
     enemyShadowCutoff: 20,
     shadowInterval: 2,
+    pointPool: 5,
   },
   high: {
     key: 'high',
@@ -43,6 +45,7 @@ export const QUALITY_PRESETS = {
     shadowCutoff: 34,
     enemyShadowCutoff: 28,
     shadowInterval: 1,
+    pointPool: 8,
   },
 };
 

@@ -16,6 +16,7 @@ import {
 } from './game/zombies.js';
 import { QUALITY_PRESETS, qualityByKey } from './game/perf.js';
 import { isBlockedAt } from './game/collision.js';
+import { restartCssAnim } from './ui/util.js';
 
 /**
  * main.js
@@ -209,26 +210,82 @@ let weaponManager = null;
 let enemies = [];
 let round = 1;
 
-// Distance-based shadow/light culling: distant props skip the shadow pass
-// and lights beyond their reach are hidden, cutting draw calls + per-fragment
-// light loops. Refreshed on a slow cadence (0.2s), not per frame.
-const perfCull = { shadowCasters: [], pointLights: [], acc: 0 };
+// Distance-based shadow culling: distant props skip the shadow pass.
+// Refreshed on a slow cadence (0.2s), not per frame. Merged static props
+// always cast (one draw call for the whole map), so they are excluded.
+const perfCull = { shadowCasters: [], acc: 0 };
+
+/**
+ * Point-light pool: the map's point lights live as data-only "defs"
+ * (extracted at build), and a FIXED-SIZE pool of real PointLights always
+ * sits in the scene. Each update retargets the pool slots at the nearest
+ * defs. The visible light count never changes, so three.js never
+ * re-compiles the material shaders mid-run (the old light.visible
+ * toggling invalidated every program every 200 ms).
+ */
+const lightPool = { defs: [], slots: [], used: [], size: -1 };
 
 function collectPerfCullables() {
   perfCull.shadowCasters.length = 0;
-  perfCull.pointLights.length = 0;
   if (!scene) return;
   const wp = _cullPos2;
   scene.traverse((o) => {
-    if (o.isMesh && o.castShadow && !o.userData.isEnemy) {
+    if (o.isMesh && o.castShadow && !o.userData.isEnemy && !o.userData.mergedStatic) {
       o.getWorldPosition(wp);
       o.userData._cullX = wp.x;
       o.userData._cullZ = wp.z;
       perfCull.shadowCasters.push(o);
-    } else if (o.isPointLight) {
-      perfCull.pointLights.push(o);
     }
   });
+}
+
+function setLightPoolSize(n) {
+  if (!scene || lightPool.size === n) return;
+  for (const s of lightPool.slots) scene.remove(s);
+  lightPool.slots.length = 0;
+  for (let i = 0; i < n; i++) {
+    const pl = new THREE.PointLight(0xffffff, 0, 16, 2);
+    pl.layers.enable(1); // viewmodel pass shares the pool lighting
+    pl.position.set(0, -50, 0);
+    scene.add(pl);
+    lightPool.slots.push(pl);
+  }
+  lightPool.size = n;
+}
+
+/** Re-target the pool slots at the `size` nearest in-range light defs. */
+function refreshLightPool(p) {
+  const { defs, slots, size } = lightPool;
+  if (size <= 0) return;
+  const used = lightPool.used;
+  used.length = defs.length;
+  used.fill(0);
+  for (let s = 0; s < size; s++) {
+    const slot = slots[s];
+    let best = -1;
+    let bestD = Infinity;
+    for (let i = 0; i < defs.length; i++) {
+      if (used[i]) continue;
+      const d = defs[i];
+      const dx = d.position.x - p.x;
+      const dz = d.position.z - p.z;
+      const range = (d.distance || 20) + 6;
+      const dd = dx * dx + dz * dz;
+      if (dd > range * range) continue;
+      if (dd < bestD) { bestD = dd; best = i; }
+    }
+    if (best < 0) {
+      slot.intensity = 0;
+      continue;
+    }
+    used[best] = 1;
+    const d = defs[best];
+    slot.position.copy(d.position);
+    slot.color.copy(d.color);
+    slot.distance = d.distance;
+    slot.decay = d.decay;
+    slot.intensity = d.intensity;
+  }
 }
 
 const _cullPos = new THREE.Vector3();
@@ -243,12 +300,6 @@ function updatePerfCulling() {
     const dx = (m.userData._cullX ?? m.position.x) - p.x;
     const dz = (m.userData._cullZ ?? m.position.z) - p.z;
     m.castShadow = q.shadows && (dx * dx + dz * dz) < shadowCutoffSq;
-  }
-  for (const l of perfCull.pointLights) {
-    l.getWorldPosition(_cullPos2);
-    _cullPos2.y = 0;
-    const range = (l.distance || 20) + 14;
-    l.visible = _cullPos2.distanceToSquared(_cullPos) < range * range;
   }
   // Zombies too: distant horde members skip the shadow pass. Re-evaluated
   // every tick so pooled (recycled) groups never come back shadowless.
@@ -423,7 +474,10 @@ function applyQuality() {
       }
     }
   }
-  if (scene && controller) updatePerfCulling();
+  if (scene && controller) {
+    setLightPoolSize(q.pointPool || 5);
+    updatePerfCulling();
+  }
 }
 
 function applyShadowCadence() {
@@ -706,6 +760,10 @@ function addScore(base) {
   updateHUD();
 }
 
+// One shared pickup mesh (only the colour changes) — used to build and
+// dispose a fresh OctahedronGeometry for every single drop.
+const POWERUP_GEO = new THREE.OctahedronGeometry(0.3, 0);
+
 function spawnPowerUp(pos, forcedKey = null) {
   const t = forcedKey
     ? POWERUP_TYPES.find((p) => p.key === forcedKey)
@@ -716,7 +774,7 @@ function spawnPowerUp(pos, forcedKey = null) {
     emissiveIntensity: 0.8,
     roughness: 0.3,
   });
-  const mesh = new THREE.Mesh(new THREE.OctahedronGeometry(0.3, 0), mat);
+  const mesh = new THREE.Mesh(POWERUP_GEO, mat);
   // Zombies walk through walls while dying — nudge the drop back toward the
   // map center until it sits in open ground the player can actually reach.
   let { x, z } = pos;
@@ -774,22 +832,38 @@ function applyPowerUp(key) {
 }
 
 // ── Explosion FX (bomber detonation): expanding additive orb ──
+// Orbs are pooled (each keeps its own material so overlapping blasts never
+// fade each other) — bombers used to alloc a sphere per detonation.
 const fxList = [];
+const ORB_GEO = new THREE.SphereGeometry(0.5, 12, 12);
+const orbPool = [];
 
 function spawnExplosion(pos, playSound = true) {
   if (!scene) return;
   if (playSound) weaponManager.sfx.explosion();
-  const mat = new THREE.MeshBasicMaterial({
-    color: 0xff9944,
-    transparent: true,
-    opacity: 0.95,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-  });
-  const orb = new THREE.Mesh(new THREE.SphereGeometry(0.5, 12, 12), mat);
+  let orb = orbPool.pop();
+  if (!orb) {
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xff9944,
+      transparent: true,
+      opacity: 0.95,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    orb = new THREE.Mesh(ORB_GEO, mat);
+  }
+  orb.material.opacity = 0.95;
+  orb.visible = true;
   orb.position.copy(pos).setY(0.8);
+  orb.scale.setScalar(1);
   scene.add(orb);
-  fxList.push({ orb, mat, t: 0 });
+  fxList.push({ orb, mat: orb.material, t: 0 });
+}
+
+function releaseOrbPool() {
+  // Geometry is the shared ORB_GEO — only per-orb materials are released.
+  for (const orb of orbPool) orb.material.dispose();
+  orbPool.length = 0;
 }
 
 function updateFx(dt) {
@@ -801,8 +875,10 @@ function updateFx(dt) {
     f.mat.opacity = 0.95 * (1 - k);
     if (k >= 1) {
       scene.remove(f.orb);
-      f.orb.geometry.dispose();
-      f.mat.dispose();
+      f.orb.visible = false;
+      // ORB_GEO is shared across every orb — only the material is per-orb.
+      if (orbPool.length >= 6) f.mat.dispose();
+      else orbPool.push(f.orb);
       fxList.splice(i, 1);
     }
   }
@@ -868,6 +944,17 @@ function updateBuffs(now) {
 // breached barriers) projected by bearing onto a flat ±100° ribbon. ──
 const COMPASS_SPAN = (100 * Math.PI) / 180;
 const CARDINALS = [[0, 'K'], [Math.PI / 2, 'D'], [Math.PI, 'G'], [-Math.PI / 2, 'B']];
+// POI dot rows are rebuilt every frame; reuse pre-allocated slots so the
+// compass never allocates. Each entry: [x, z, color, label].
+const compassPois = [];
+for (let i = 0; i < 64; i++) compassPois.push([0, 0, '', '']);
+let compassPoiN = 0;
+function pushPoi(x, z, col, label) {
+  const e = compassPois[compassPoiN];
+  if (!e) return;
+  e[0] = x; e[1] = z; e[2] = col; e[3] = label;
+  compassPoiN++;
+}
 
 function drawCompass() {
   if (!compassCtx || !controller) return;
@@ -896,21 +983,22 @@ function drawCompass() {
   }
 
   // POI dots
-  const pois = [];
-  if (mysteryBox) pois.push([mysteryBox.position.x, mysteryBox.position.z, '#ffee58', '?']);
+  compassPoiN = 0;
+  if (mysteryBox) pushPoi(mysteryBox.position.x, mysteryBox.position.z, '#ffee58', '?');
   if (papMachine && !papMachine.used) {
-    pois.push([papMachine.mesh.position.x, papMachine.mesh.position.z, '#ce93d8', 'P']);
+    pushPoi(papMachine.mesh.position.x, papMachine.mesh.position.z, '#ce93d8', 'P');
   }
   for (const g of wallGuns) {
-    if (!g.used) pois.push([g.mesh.position.x, g.mesh.position.z, '#90caf9', 'G']);
+    if (!g.used) pushPoi(g.mesh.position.x, g.mesh.position.z, '#90caf9', 'G');
   }
   for (const b of barriers) {
     if (b.open && !b.collapsed && barrierNeedsRepair(b.hp)) {
-      pois.push([b.mesh.position.x, b.mesh.position.z, '#ff8a65', '!']);
+      pushPoi(b.mesh.position.x, b.mesh.position.z, '#ff8a65', '!');
     }
   }
   ctx.font = 'bold 11px monospace';
-  for (const [px, pz, col, label] of pois) {
+  for (let pi = 0; pi < compassPoiN; pi++) {
+    const [px, pz, col, label] = compassPois[pi];
     const dx = px - controller.position.x;
     const dz = pz - controller.position.z;
     const len = Math.hypot(dx, dz);
@@ -933,6 +1021,7 @@ function buildGame() {
   const built = createScene(setup.mapId);
   scene = built.scene;
   arenaHalf = built.arenaHalf ?? 45;
+  lightPool.defs = built.pointLights || [];
 
   // Zones & barriers: gated zones stay locked (and spawn-inert) until bought.
   barriers.length = 0;
@@ -1171,6 +1260,7 @@ function buildGame() {
       b.hp = BARRIER_HP;
       if (wasCollapsed) {
         scene.remove(b.mesh); // rubble path cleared (mesh already torn down)
+        disposeSceneAssets(b.mesh);
       } else {
         // Knocked-down look: the frame stays as a low barrier the horde
         // will chew back down — its height reads the remaining HP.
@@ -1286,6 +1376,30 @@ function buildGame() {
   updateHUD();
 }
 
+/**
+ * Release the GPU memory of a finished scene. Three.js resources are NOT
+ * reclaimed by the JS garbage collector — geometries/materials/textures
+ * must be disposed explicitly, or every restart leaks another map's worth
+ * of VRAM. Enemy pooled groups and cached gun assets are already out of
+ * the scene by the time this runs (they're recycled across runs).
+ */
+function disposeSceneAssets(root) {
+  root.traverse((o) => {
+    if (o.isLight) return;
+    if (o.geometry) o.geometry.dispose();
+    const mats = o.material ? (Array.isArray(o.material) ? o.material : [o.material]) : null;
+    if (!mats) return;
+    for (const m of mats) {
+      // ModelLoader's DataTexture materials are cached and shared across
+      // runs (enemy pools, legs viewmodel) — never dispose those.
+      if (m.map && !m.map.isCanvasTexture) continue;
+      if (m.map) m.map.dispose(); // scene-owned canvas texture
+      m.dispose();
+    }
+  });
+  if (root.background && root.background.dispose) root.background.dispose();
+}
+
 function teardownGame() {
   if (!scene) return;
   document.removeEventListener('keydown', onInteractKey);
@@ -1299,9 +1413,10 @@ function teardownGame() {
     controller.dispose();
   }
 
-  // The gun/hands/legs are parented to the camera; drop them all so the
-  // next game starts with a clean camera. The old scene (world, tracers,
-  // effects) is released for GC when `scene` is reassigned.
+  // The gun/hands are parented to the camera; release their GPU data and
+  // drop them so the next game starts with a clean camera. (Gun geometry
+  // is built fresh per run; shared ModelLoader materials are map-guarded.)
+  disposeSceneAssets(camera);
   while (camera.children.length) camera.remove(camera.children[0]);
   weaponManager?.sfx.stopMusic();
   camera.fov = opts.fov;
@@ -1309,23 +1424,39 @@ function teardownGame() {
 
   for (const e of enemies) e.release();
   enemies = [];
+  // Power-ups share one module-level geometry: detach first, dispose only
+  // the per-drop material (the scene sweep below must not hit the shared geo).
+  for (const p of powerUps) { scene.remove(p); p.material.dispose(); }
   powerUps.length = 0;
-  for (const bag of sandbags) scene.remove(bag);
+  for (const bag of sandbags) { scene.remove(bag); disposeSceneAssets(bag); }
   sandbags.length = 0;
   sandbagStock = 0;
   for (const f of fxList) {
     scene.remove(f.orb);
-    f.orb.geometry.dispose();
-    f.mat.dispose();
+    f.orb.visible = false;
+    orbPool.push(f.orb);
   }
+  releaseOrbPool();
   fxList.length = 0;
   machines.length = 0; // meshes die with the old scene
-  for (const b of barriers) if (!b.collapsed) scene.remove(b.mesh);
   barriers.length = 0;
   zones.length = 0;
   windows.length = 0;
   wallGuns.length = 0;
   papMachine = null;
+  if (dayCycle.sun?.shadow?.map) { dayCycle.sun.shadow.map.dispose(); dayCycle.sun.shadow.map = null; }
+
+  // Light pool slots live in the old scene.
+  lightPool.defs = [];
+  lightPool.slots.length = 0;
+  lightPool.size = -1;
+
+  // If the camera is still parented to the world, unhook it.
+  camera.removeFromParent();
+
+  // Free the map's GPU memory (merged geometries, materials, canvas
+  // textures, sky cube) — the biggest source of restart leaks.
+  disposeSceneAssets(scene);
 
   scene = null;
   controller = null;
@@ -1536,13 +1667,15 @@ window.addEventListener('gamepaddisconnected', () => {
 });
 
 /** Two-pass render: world (layer 0), then viewmodel over a cleared depth. */
-function renderWorld() {
+function renderWorld(skipViewmodel = false) {
   // Accumulate stats across both passes (renderer.info resets per render()).
   renderer.info.reset();
   camera.layers.set(0);
   renderer.render(scene, camera);
   // The gun must never be occluded by / embedded into walls, so the
-  // viewmodel pass clears the depth buffer first.
+  // viewmodel pass clears the depth buffer first. While the pause overlay
+  // covers the screen the gun pass is pure waste — skip it.
+  if (skipViewmodel) return;
   renderer.clearDepth();
   camera.layers.set(1);
   renderer.autoClear = false;
@@ -1589,7 +1722,7 @@ function animate() {
   // show the frozen world but tick nothing. Debug runs (?fpzDebug=1) skip
   // the freeze so the loop runs headlessly without a pointer lock.
   if (document.pointerLockElement !== canvas && !pendingRestart && !DEBUG_UNPAUSED) {
-    renderWorld();
+    renderWorld(true);
     return;
   }
 
@@ -1604,6 +1737,8 @@ function animate() {
     if (!pl.visible) continue;
     pl.intensity = 14 * (0.6 + Math.random() * 0.5 + Math.sin(performance.now() * 0.01 + pl.userData.flickerSeed) * 0.15);
   }
+  // Retarget the fixed light pool at the nearest defs (flicker included).
+  refreshLightPool(controller.position);
 
   const now = performance.now();
   drawCompass();
@@ -1615,6 +1750,7 @@ function animate() {
     if (p.position.distanceTo(controller.position) < 1.5) {
       applyPowerUp(p.userData.key);
       scene.remove(p);
+      p.material.dispose();
       powerUps.splice(i, 1);
     }
   }
@@ -1630,6 +1766,9 @@ function animate() {
   if (waveState === 'prep') {
     prepTimer -= dt;
     if (hudPrep) hudPrep.textContent = `SONRAKİ DALGA: ${Math.max(1, Math.ceil(prepTimer))}`;
+    // Spend the quiet frames pre-building pooled zombie bodies so the wave
+    // spawn tick never pays model/material costs mid-fight.
+    Enemy.prewarm(2);
     if (prepTimer <= 0) {
       if (hudPrep) hudPrep.textContent = '';
       spawnWave();
@@ -1694,8 +1833,8 @@ function animate() {
       const hbEl = document.getElementById('damage');
       if (hbEl) {
         hbEl.classList.remove('show');
-        void hbEl.offsetWidth;
         hbEl.classList.add('show');
+        restartCssAnim(hbEl);
       }
     }
   } else {
@@ -1751,8 +1890,8 @@ function animate() {
       const dmgEl = document.getElementById('damage');
       if (dmgEl) {
         dmgEl.classList.remove('show');
-        void dmgEl.offsetWidth;
         dmgEl.classList.add('show');
+        restartCssAnim(dmgEl);
       }
       weaponManager.sfx.playerHurt();
       gamepad.rumble(0.6, 1, 180);
@@ -1850,12 +1989,12 @@ function updatePerfHud(dt) {
       document.body.appendChild(perfHud.el);
     }
     const info = renderer.info.render;
-    const visLights = perfCull.pointLights.filter((l) => l.visible).length;
     const visShadowCasters = perfCull.shadowCasters.filter((m) => m.castShadow).length;
+    const visLights = lightPool.used.reduce((s, u) => s + u, 0);
     perfHud.el.textContent =
       `FPS ${perfHud.fps}\n` +
       `draw calls ${info.calls}  tris ${info.triangles}\n` +
-      `lights ${visLights}/${perfCull.pointLights.length}  shadowMESH ${visShadowCasters}/${perfCull.shadowCasters.length}\n` +
+      `lights ${visLights}/${lightPool.size} pool (${lightPool.defs.length} defs)  shadowMESH ${visShadowCasters}/${perfCull.shadowCasters.length}\n` +
       `enemies ${enemies.length}  gfx ${qualityByKey(opts.quality).label}`;
   }
 }

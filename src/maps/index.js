@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { createCrate, createTarget, createBarrier } from '../gfx/Prefabs.js';
 import { flickerLights, addWindowBoards } from './kit.js';
+import { extractPointLights, mergeStaticProps, freezeMatrices } from './statics.js';
 import { meta as streetMeta, build as buildStreet } from './street.js';
 import { meta as factoryMeta, build as buildFactory } from './factory.js';
 import { meta as bunkerMeta, build as buildBunker } from './bunker.js';
@@ -53,6 +54,7 @@ export function createScene(mapId = 'street') {
       const mesh = createBarrier(width, cost, style);
       mesh.position.set(x, 0, z);
       mesh.rotation.y = rotY;
+      mesh.userData.noMerge = true; // rescales / collapses at runtime
       scene.add(mesh);
       const along = Math.abs(Math.sin(rotY)) > 0.5;
       const collider = ctx.addCollisionBox(
@@ -117,6 +119,13 @@ export function createScene(mapId = 'street') {
   const build = BUILDERS[mapId] || buildStreet;
   build(ctx);
 
+  // Build-time optimization pass: map lights become "defs" driven by a
+  // fixed-size pool in main.js, static props collapse into merged draw
+  // calls, and the frozen world skips every per-frame matrix update.
+  const pointLights = extractPointLights(scene);
+  mergeStaticProps(scene, obstacles);
+  freezeMatrices(scene);
+
   const lights = { ambient: null, hemi: null, sun: null };
   scene.traverse((o) => {
     if (o.isAmbientLight && !lights.ambient) lights.ambient = o;
@@ -124,5 +133,5 @@ export function createScene(mapId = 'street') {
     else if (o.isDirectionalLight && !lights.sun) lights.sun = o;
   });
 
-  return { scene, obstacles, targets, arenaHalf: ctx.arenaHalf, lights, zones, barriers, windows };
+  return { scene, obstacles, targets, arenaHalf: ctx.arenaHalf, lights, zones, barriers, windows, pointLights };
 }

@@ -30,6 +30,7 @@ import {
   createHandsMesh,
   createLegsMesh,
 } from './viewmodels.js';
+import { restartCssAnim } from '../ui/util.js';
 
 /**
  * Weapons.js
@@ -51,6 +52,16 @@ const ADS_STOCK_TUCK = 0.045;
 const SWAP_LOWER = 0.5;
 /** Seconds left on the clock when the meshes are exchanged. */
 const SWAP_CUT_T = SWAP_TIME * (1 - SWAP_LOWER);
+
+// Shared, never-mutated effect scale targets + tracer scratch (per-shot
+// allocation used to churn GC during full-auto).
+const SCALE_ONE = new THREE.Vector3(1, 1, 1);
+const SCALE_TWO = new THREE.Vector3(2, 2, 2);
+const SCALE_06 = new THREE.Vector3(0.6, 0.6, 0.6);
+const SCALE_14 = new THREE.Vector3(1.4, 1.4, 1.4);
+const _tracerDir = new THREE.Vector3();
+const _decalLook = new THREE.Vector3();
+const _decalNormal = new THREE.Vector3();
 
 export {
   WEAPON_DEFS,
@@ -473,6 +484,16 @@ export class WeaponManager {
     for (const d of this._decals) this.scene.remove(d);
     this._decalMat.dispose();
     this._decalGeo.dispose();
+    // Shared effect materials/geometries live for the manager's lifetime.
+    for (const mat of [this._tracerMat, this._sparkMat, this._flashCoreMat, this._flashStreakMat, this._flashGlowMat]) {
+      if (mat) mat.dispose();
+    }
+    for (const geo of [this._tracerGeo, this._sparkGeo, this._flashCoreGeo, this._flashStreakGeo, this._flashGlowGeo, this._bloodGeo]) {
+      if (geo) geo.dispose();
+    }
+    for (const p of this._bloodPool || []) p.mat.dispose();
+    this._bloodPool = [];
+    this.effects.length = 0;
   }
 
   /** Bayonet slash (V): silent, short range, heavy damage. */
@@ -624,7 +645,7 @@ export class WeaponManager {
   _spawnDecal(point, normal) {
     const decal = new THREE.Mesh(this._decalGeo, this._decalMat);
     decal.position.copy(point).addScaledVector(normal, 0.015);
-    decal.lookAt(point.clone().add(normal));
+    decal.lookAt(_decalLook.copy(point).add(normal));
     decal.rotation.z = Math.random() * Math.PI * 2;
     decal.scale.setScalar(0.7 + Math.random() * 0.9);
     this.scene.add(decal);
@@ -688,7 +709,7 @@ export class WeaponManager {
       onEnemy = this._onHit(hit.object, hit.point, dmg);
       if (onEnemy === null && hit.face) {
         // World geometry hit: leave a persistent blood splat decal.
-        const n = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
+        const n = _decalNormal.copy(hit.face.normal).transformDirection(hit.object.matrixWorld).normalize();
         this._spawnDecal(hit.point, n);
       }
     } else {
@@ -710,10 +731,10 @@ export class WeaponManager {
     const el = this._hitEl ?? (this._hitEl = document.getElementById('hitmarker'));
     if (!el) return;
     el.classList.remove('show', 'kill');
-    // Force a reflow so the animation can restart on rapid re-hits.
-    void el.offsetWidth;
     if (kill) el.classList.add('kill');
     el.classList.add('show');
+    // Restart without forcing a synchronous reflow (used to run per shot).
+    restartCssAnim(el);
   }
 
   /** Returns true=kill, false=hit, null=not an enemy (world geometry). */
@@ -739,29 +760,46 @@ export class WeaponManager {
     return true;
   }
 
-  /** Dark-red particle puff at the hit point on an enemy. */
+  /**
+   * Dark-red particle puff at the hit point on an enemy. Puffs are pooled
+   * (each with its own material so overlapping fades never fight) — full
+   * auto used to build 7 meshes + a material per blood splat.
+   */
   _spawnBlood(point) {
     if (!this._bloodGeo) this._bloodGeo = new THREE.BoxGeometry(0.045, 0.045, 0.045);
-    // Fresh material per puff: overlapping puffs must not fade each other.
-    const mat = new THREE.MeshBasicMaterial({
-      color: 0x8e1414,
-      transparent: true,
-      opacity: 1,
-      depthWrite: false,
-    });
-    const group = new THREE.Group();
-    const vel = [];
-    for (let i = 0; i < 7; i++) {
-      const p = new THREE.Mesh(this._bloodGeo, mat);
-      p.position.copy(point);
-      p.renderOrder = 2;
-      group.add(p);
-      vel.push(new THREE.Vector3(
+    if (!this._bloodPool) this._bloodPool = [];
+    let puff = this._bloodPool.pop();
+    if (!puff) {
+      if (this._bloodOut >= 14) return; // hard cap during extreme hit storms
+      const mat = new THREE.MeshBasicMaterial({
+        color: 0x8e1414,
+        transparent: true,
+        opacity: 1,
+        depthWrite: false,
+      });
+      const group = new THREE.Group();
+      const vel = [];
+      for (let i = 0; i < 7; i++) {
+        const p = new THREE.Mesh(this._bloodGeo, mat);
+        p.renderOrder = 2;
+        group.add(p);
+        vel.push(new THREE.Vector3());
+      }
+      puff = { group, mat, vel };
+    } else {
+      puff.mat.opacity = 1;
+    }
+    const group = puff.group;
+    group.visible = true;
+    for (let i = 0; i < group.children.length; i++) {
+      group.children[i].position.copy(point);
+      puff.vel[i].set(
         (Math.random() * 2 - 1) * 1.6,
         0.8 + Math.random() * 1.8,
         (Math.random() * 2 - 1) * 1.6
-      ));
+      );
     }
+    this._bloodOut = (this._bloodOut || 0) + 1;
     this.scene.add(group);
     const dt0 = 1 / 60;
     this.effects.push({
@@ -771,13 +809,16 @@ export class WeaponManager {
       fade: true,
       update: () => {
         for (let i = 0; i < group.children.length; i++) {
-          vel[i].y -= 9 * dt0;
-          group.children[i].position.addScaledVector(vel[i], dt0);
+          puff.vel[i].y -= 9 * dt0;
+          group.children[i].position.addScaledVector(puff.vel[i], dt0);
         }
       },
       onDone: () => {
         this.scene.remove(group);
-        mat.dispose();
+        group.visible = false;
+        this._bloodOut--;
+        if (this._bloodPool.length < 12) this._bloodPool.push(puff);
+        else puff.mat.dispose();
       },
     });
   }
@@ -1001,7 +1042,7 @@ export class WeaponManager {
     if (!tracer) {
       tracer = new THREE.Mesh(this._tracerGeo || (this._tracerGeo = new THREE.BoxGeometry(0.02, 0.02, 0.6)), mat);
     }
-    const dir = to.clone().sub(from);
+    const dir = _tracerDir.copy(to).sub(from);
     const len = dir.length();
     tracer.position.copy(from).addScaledVector(dir, 0.5);
     tracer.lookAt(to);
@@ -1029,8 +1070,8 @@ export class WeaponManager {
       t: 0,
       dur: 0.15,
       fade: true,
-      startScale: new THREE.Vector3(1, 1, 1),
-      endScale: new THREE.Vector3(2, 2, 2),
+      startScale: SCALE_ONE,
+      endScale: SCALE_TWO,
       onDone: () => { this.scene.remove(spark); spark.material.opacity = 1; spark.visible = false; this._impactPool.push(spark); },
     });
   }
@@ -1084,8 +1125,8 @@ export class WeaponManager {
       t: 0,
       dur: 0.07,
       fade: true,
-      startScale: new THREE.Vector3(0.6, 0.6, 0.6),
-      endScale: new THREE.Vector3(1.4, 1.4, 1.4),
+      startScale: SCALE_06,
+      endScale: SCALE_14,
       onDone: () => {
         this.scene.remove(flash);
         this._flashCoreMat.opacity = 1;

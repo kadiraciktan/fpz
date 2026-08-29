@@ -32,6 +32,7 @@ export function addBaseLights(scene, { amb, hemiSky, hemiGround, sunColor, sunIn
     sun.shadow.camera.top = 36;
     sun.shadow.camera.bottom = -36;
     scene.add(sun);
+    sun.target.userData.isSunTarget = true;
     scene.add(sun.target);
   }
 
@@ -720,7 +721,6 @@ export function addWindowBoards(ctx, x, z, rotY, width = 2.2) {
     const plank = new THREE.Mesh(new THREE.BoxGeometry(width * 0.92, 0.16, 0.07), wood);
     plank.position.set(0, 0.55 + i * 0.48, 0.04 * (i % 2 ? 1 : -1));
     plank.rotation.z = (i - 1.5) * 0.08;
-    plank.castShadow = true;
     g.add(plank);
   }
   const cross = new THREE.Mesh(new THREE.BoxGeometry(0.14, 2.1, 0.07), wood);
@@ -823,7 +823,8 @@ export function addDebris(scene, cx, cz, r, n, mats) {
     const chunk = new THREE.Mesh(new THREE.BoxGeometry(s, s * 0.6, s), mats[i % mats.length]);
     chunk.position.set(cx + (Math.random() - 0.5) * r * 2, s * 0.3, cz + (Math.random() - 0.5) * r * 2);
     chunk.rotation.set(Math.random() * 0.6, Math.random() * Math.PI, Math.random() * 0.6);
-    chunk.castShadow = true;
+    // Chips are palm-sized: their shadows cost a shadow-map triangle each
+    // frame and nobody can see them — skip the shadow pass entirely.
     scene.add(chunk);
   }
 }
