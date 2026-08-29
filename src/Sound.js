@@ -570,6 +570,50 @@ export class Sfx {
     }
   }
 
+  /** Menu/Gunsmith UI blip (hover-level click). */
+  uiClick() {
+    if (!this.ctx) return;
+    const t = this._now();
+    this._clack(t, 1800, 0.03, 0.22);
+  }
+
+  /** Gunsmith equip confirm: two-tone rising blip. */
+  uiConfirm() {
+    if (!this.ctx) return;
+    const t = this._now();
+    for (const [off, f] of [[0, 760], [0.07, 1140]]) {
+      const osc = this.ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.value = f;
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.16, t + off);
+      g.gain.exponentialRampToValueAtTime(0.001, t + off + 0.09);
+      osc.connect(g).connect(this.master);
+      osc.start(t + off);
+      osc.stop(t + off + 0.1);
+    }
+    this._clack(t + 0.02, 1500, 0.03, 0.18);
+  }
+
+  /** Locked/invalid selection: short low buzz. */
+  uiDeny() {
+    if (!this.ctx) return;
+    const t = this._now();
+    const osc = this.ctx.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(220, t);
+    osc.frequency.exponentialRampToValueAtTime(110, t + 0.12);
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 700;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.2, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+    osc.connect(lp).connect(g).connect(this.master);
+    osc.start(t);
+    osc.stop(t + 0.16);
+  }
+
   /** A short filtered click (used for reload mechanics). */
   _clack(t, freq, dur, vol) {
     const noise = this._noiseBuffer(dur + 0.02);

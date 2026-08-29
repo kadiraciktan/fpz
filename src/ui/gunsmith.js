@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { Sfx } from '../Sound.js';
 import {
   WEAPON_DEFS,
   WEAPON_LABELS,
@@ -9,28 +10,53 @@ import {
   SKINS,
   createGunsmithPreview,
   attachmentAvailable,
+  buildAttachmentMeshes,
+  ATTACH_ANCHORS,
 } from '../Weapons.js';
 
 /**
  * ui/gunsmith.js
  * The MW2-style gunsmith screen (gun preview in the middle, attachment cards
- * on a ring around it, loadout picker on the left, skins at the bottom).
- * Extracted from main.js; owns its own preview WebGL context which only runs
- * while the screen is open.
+ * on a ring around it, weapon stats + loadout picker on the left, skins at
+ * the bottom). Extracted from main.js; owns its own preview WebGL context
+ * which only runs while the screen is open.
+ *
+ * Preview staging: drag to rotate (with inertia, auto-turntable after idle),
+ * pedestal + rim glow, gentle float. Every interaction gets a UI blip.
  *
  * @param {object} setup - shared menu state { attachments, skins, loadout }
  * @param {() => number} getXp - lifetime XP getter (for unlock gating)
  */
+
+// Effective-stat deltas applied by each attachment (display model for the
+// stats panel; the real combat math lives in Weapons.js).
+const ATT_EFFECT = {
+  suppressor: { dmg: -1, mob: -8 },
+  extendedMag: { magMul: 1.5, mob: -4 },
+  foregrip: { mob: 6 },
+  lightStock: { mob: 8 },
+};
+
+// Stats panel normalization (max values across the weapon table).
+const STAT_MAX = { dmg: 6, rpm: 800, mag: 80, range: 180, mob: 100 };
+
 export function createGunsmithScreen(setup, getXp) {
   const gunsmithEl = document.getElementById('gunsmithScreen');
   const gsCanvas = document.getElementById('gunsmithCanvas');
   const gsLinesEl = document.getElementById('gsLines');
   const gsNameEl = document.getElementById('gsWeaponName');
+  const gsCatEl = document.getElementById('gsWeaponCat');
   const gsCardsEl = document.getElementById('gsCards');
   const gsSkinsEl = document.getElementById('gsSkins');
   const gsTabsEl = document.getElementById('gsWeaponTabs');
   const gsPickerEl = document.getElementById('gsPicker');
+  const gsStatsEl = document.getElementById('gsStats');
+  const gsXpEl = document.getElementById('gsXpChip');
   const attachSummaryEl = document.getElementById('attachSummary');
+
+  // Soft UI feedback (own audio graph; unlocked lazily on first click).
+  const ui = new Sfx();
+  gunsmithEl.addEventListener('pointerdown', () => ui.unlock());
 
   // Card slot layout — MW2-style ring around the gun: 3 top, 2 sides, 2 bottom.
   // The four optics share one mount slot; only one can be equipped at a time.
@@ -72,6 +98,28 @@ export function createGunsmithScreen(setup, getXp) {
   const gsRim = new THREE.DirectionalLight(0x4fc3f7, 1.6);
   gsRim.position.set(-3, 1, -2);
   gsScene.add(gsRim);
+  const gsFill = new THREE.DirectionalLight(0xffb347, 0.7);
+  gsFill.position.set(-1, -2, 3);
+  gsScene.add(gsFill);
+
+  // Pedestal: dark disc + faint additive glow ring under the floating gun.
+  const gsFloor = new THREE.Mesh(
+    new THREE.CircleGeometry(1.15, 40),
+    new THREE.MeshBasicMaterial({ color: 0x0d1522 })
+  );
+  gsFloor.rotation.x = -Math.PI / 2;
+  gsFloor.position.y = -0.24;
+  gsScene.add(gsFloor);
+  const gsGlow = new THREE.Mesh(
+    new THREE.RingGeometry(0.85, 1.2, 40),
+    new THREE.MeshBasicMaterial({
+      color: 0x1e88ff, transparent: true, opacity: 0.22,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    })
+  );
+  gsGlow.rotation.x = -Math.PI / 2;
+  gsGlow.position.y = -0.238;
+  gsScene.add(gsGlow);
 
   let gsSlot = 0; // which loadout slot (0-3) is being edited
   let gsWeapon = (setup.loadout && setup.loadout[0]) || DEFAULT_LOADOUT[0];
@@ -79,7 +127,90 @@ export function createGunsmithScreen(setup, getXp) {
   let gsRafId = 0;
   let gsLastT = 0;
 
+  // Drag-to-rotate state (inertia + idle turntable + float).
+  let gsRot = -0.6;
+  let gsRotVel = 0;
+  let gsIdle = 0;
+  let gsDragging = false;
+  let gsLastX = 0;
+
+  gsCanvas.addEventListener('pointerdown', (e) => {
+    gsDragging = true;
+    gsLastX = e.clientX;
+    gsCanvas.setPointerCapture(e.pointerId);
+  });
+  gsCanvas.addEventListener('pointermove', (e) => {
+    if (!gsDragging) return;
+    const dx = e.clientX - gsLastX;
+    gsLastX = e.clientX;
+    gsRot += dx * 0.010;
+    gsRotVel = dx * 0.55; // rough rad/s for the release inertia
+    gsIdle = 0;
+  });
+  const endDrag = () => { gsDragging = false; };
+  gsCanvas.addEventListener('pointerup', endDrag);
+  gsCanvas.addEventListener('pointercancel', endDrag);
+
+  // ── Hover inspect: ghost-preview the hovered attachment on the gun ──
+  let gsPreview = null; // { group, mats } currently ghosted on the gun
+
+  function gsClearPreview() {
+    if (!gsPreview) return;
+    const key = gsPreview.key;
+    gsGunGroup?.remove(gsPreview.group);
+    for (const m of gsPreview.mats) m.dispose();
+    gsPreview = null;
+    if (!gsGunGroup) return;
+    // buildAttachmentMeshes hides the parts an attachment replaces (iron
+    // sights, original stocks). Undo that unless the REAL loadout still
+    // equips something that should keep them hidden.
+    const att = setup.attachments[gsWeapon] || {};
+    const show = (name) => {
+      const o = gsGunGroup.getObjectByName(name);
+      if (o) o.visible = true;
+    };
+    if (OPTICS.includes(key) && !OPTICS.some((o) => att[o])) show('sight');
+    if (key === 'lightStock' && !att.lightStock) {
+      const A = ATTACH_ANCHORS[gsWeapon];
+      if (A?.stock) for (const n of A.stock.hide) show(n);
+    }
+  }
+
+  /**
+   * Glowing attachment ghost on the gun. depthTest is OFF and blending is
+   * additive, so the preview can never get buried inside the barrel/receiver
+   * meshes. Cyan = would equip, gold = currently equipped (inspect).
+   */
+  function gsShowPreview(key) {
+    if (!gsGunGroup) return;
+    if (gsPreview?.key === key) return;
+    gsClearPreview();
+    const equipped = !!setup.attachments[gsWeapon]?.[key];
+    const def = WEAPON_DEFS.find((d) => d.name === gsWeapon);
+    const group = buildAttachmentMeshes(def, { [key]: true }, gsGunGroup);
+    const hex = equipped ? 0xffb300 : 0x29b6f6;
+    const mats = [];
+    group.traverse((o) => {
+      o.layers.set(0); // attachments are authored for layer 1 (viewmodel cam)
+      if (!o.isMesh) return;
+      const m = (o.material && o.material.clone) ? o.material.clone() : new THREE.MeshStandardMaterial();
+      m.transparent = true;
+      m.opacity = equipped ? 0.5 : 0.75;
+      m.depthWrite = false;
+      m.depthTest = false; // draw over the gun, not inside it
+      m.blending = THREE.AdditiveBlending;
+      m.color.setHex(hex);
+      if (m.emissive) m.emissive.setHex(hex);
+      o.material = m;
+      o.renderOrder = 10; // renderOrder lives on meshes, not groups
+      mats.push(m);
+    });
+    gsGunGroup.add(group);
+    gsPreview = { group, mats, key };
+  }
+
   function gsRebuildGun() {
+    gsClearPreview();
     if (gsGunGroup) {
       gsScene.remove(gsGunGroup);
       gsGunGroup.traverse((o) => {
@@ -97,7 +228,9 @@ export function createGunsmithScreen(setup, getXp) {
       M4A1: 0.8, MP5: 1.0, Cal50: 0.55, LSW: 0.72,
     }[gsWeapon] || 1;
     gsGunGroup.scale.setScalar(scale);
-    gsGunGroup.rotation.y = -0.6;
+    // NB: do NOT reset gsRot/gsRotVel here — equipping an attachment must not
+    // snap the gun back to its default pose; the render loop re-applies the
+    // current rotation to the freshly built group on the very next frame.
     gsScene.add(gsGunGroup);
   }
 
@@ -123,7 +256,20 @@ export function createGunsmithScreen(setup, getXp) {
     gsRafId = requestAnimationFrame(gsRenderLoop);
     const dt = Math.min(0.05, (t - gsLastT) / 1000 || 0);
     gsLastT = t;
-    if (gsGunGroup) gsGunGroup.rotation.y += dt * 0.55;
+    if (gsGunGroup) {
+      if (gsDragging) {
+        gsIdle = 0;
+      } else {
+        gsIdle += dt;
+        gsRotVel *= Math.max(0, 1 - dt * 3); // inertia decay
+        gsRot += gsRotVel * dt;
+        // After 2 s of no touching, ease back into a slow turntable.
+        const idleK = THREE.MathUtils.smoothstep(gsIdle, 2, 4);
+        gsRot += 0.45 * idleK * dt;
+      }
+      gsGunGroup.rotation.y = gsRot;
+      gsGunGroup.position.y = Math.sin(t * 0.0011) * 0.014; // gentle float
+    }
     gsRenderer.render(gsScene, gsCamera);
   }
 
@@ -148,6 +294,69 @@ export function createGunsmithScreen(setup, getXp) {
     }
   }
 
+  /** Effective stats for the weapon being edited (attachments applied). */
+  function gsEffStats(hoverKey = null) {
+    const def = WEAPON_DEFS.find((d) => d.name === gsWeapon);
+    const att = { ...(setup.attachments[gsWeapon] || {}) };
+    // Hover = preview the toggle: equip if empty, strip if mounted.
+    if (hoverKey) {
+      if (OPTICS.includes(hoverKey)) for (const o of OPTICS) att[o] = false;
+      att[hoverKey] = !att[hoverKey];
+    }
+    const eff = {
+      dmg: def.damage,
+      rpm: Math.round(60 / def.fireRate),
+      mag: att.extendedMag ? Math.round(def.magazineSize * 1.5) : def.magazineSize,
+      range: def.range,
+      mob: 50,
+    };
+    for (const key of Object.keys(ATT_EFFECT)) {
+      if (!att[key]) continue;
+      const fx = ATT_EFFECT[key];
+      if (fx.dmg) eff.dmg = Math.max(1, eff.dmg + fx.dmg);
+      if (fx.mob) eff.mob += fx.mob;
+    }
+    return {
+      base: {
+        dmg: def.damage, rpm: eff.rpm, mag: def.magazineSize, range: def.range, mob: 50,
+      },
+      eff,
+    };
+  }
+
+  function gsUpdateStats(hoverKey = null) {
+    if (!gsStatsEl) return;
+    const { base, eff } = gsEffStats(hoverKey);
+    const rows = [
+      ['HASAR', 'dmg', (v) => `x${v}`],
+      ['ATIŞ/DK', 'rpm', (v) => String(v)],
+      ['ŞARJÖR', 'mag', (v) => String(v)],
+      ['MENZİL', 'range', (v) => `${v} m`],
+      ['HAREKET', 'mob', (v) => `${v}`],
+    ];
+    const title = hoverKey
+      ? `ÖNİZLEME: ${ATTACHMENTS[hoverKey].label}`
+      : 'SİLAH STATLARI';
+    gsStatsEl.innerHTML = `<div class="gsStatsTitle${hoverKey ? ' preview' : ''}">${title}</div>` + rows.map(([label, key, fmt]) => {
+      const v = eff[key];
+      const b = base[key];
+      const d = v - b;
+      const pct = Math.max(4, Math.min(100, (v / STAT_MAX[key]) * 100));
+      const basePct = Math.max(0, Math.min(100, (b / STAT_MAX[key]) * 100));
+      const kind = d > 0 ? 'good' : d < 0 ? 'bad' : '';
+      const dTxt = d === 0 ? '' : `<span class="${kind}">${d > 0 ? `(+${d})` : `(−${Math.abs(d)})`}</span>`;
+      return `
+        <div class="gsStat">
+          <div class="gsStatHead"><span>${label}</span><b>${fmt(v)} ${dTxt}</b></div>
+          <div class="gsBar"><i class="${kind}" style="width:${pct}%"></i><u style="left:${basePct}%"></u></div>
+        </div>`;
+    }).join('');
+  }
+
+  function gsUpdateXpChip() {
+    if (gsXpEl) gsXpEl.textContent = `⭐ ${getXp()} XP`;
+  }
+
   function gsBuildCards() {
     const totalXp = getXp();
     gsCardsEl.innerHTML = '';
@@ -161,8 +370,12 @@ export function createGunsmithScreen(setup, getXp) {
       card.dataset.key = slot.key;
       if (locked) card.classList.add('disabled');
       else if (setup.attachments[gsWeapon][slot.key]) card.classList.add('equipped');
+      const xpPct = xpReq > 0 ? Math.min(100, (totalXp / xpReq) * 100) : 100;
       card.innerHTML = `
-        <div class="gsTitle">${meta.label}${xpReq > 0 ? ` <span class="gsXp">${xpReq} XP</span>` : ''}</div>
+        <div class="gsTitle">${meta.label}
+          ${meta.chip ? `<span class="gsChip ${meta.chipKind || 'info'}">${meta.chip}</span>` : ''}
+          <span class="gsSlot">${meta.slot}</span>
+        </div>
         <div class="gsBox">
           <div class="gsWName">${WEAPON_LABELS[gsWeapon]}</div>
           <div class="gsMini">${GS_ICONS[slot.key]}<div class="gsA">A</div></div>
@@ -173,34 +386,65 @@ export function createGunsmithScreen(setup, getXp) {
                 ? 'Bu silahta yok'
                 : (card.classList.contains('equipped') ? 'TAKILI' : 'BOŞ — tıkla')
           }: ${meta.hint}</div>
+          ${xpLocked ? `<div class="gsXpBar"><i style="width:${xpPct}%"></i></div>` : ''}
         </div>`;
       if (!locked) {
-        card.addEventListener('click', () => {
-          const wasOn = setup.attachments[gsWeapon][slot.key];
-          if (OPTICS.includes(slot.key)) {
-            // Optics share a single mount — equipping one drops the others.
-            for (const o of OPTICS) setup.attachments[gsWeapon][o] = false;
-          }
-          setup.attachments[gsWeapon][slot.key] = !wasOn;
-          gsRefreshCards();
-          gsRebuildGun();
-          gsUpdateSummary();
+        card.addEventListener('pointerenter', () => {
+          gsShowPreview(slot.key);
+          gsUpdateStats(slot.key);
+        });
+        card.addEventListener('pointerleave', () => {
+          gsClearPreview();
+          gsUpdateStats();
         });
       }
+      card.addEventListener('click', () => {
+        if (locked) {
+          ui.unlock();
+          ui.uiDeny();
+          return;
+        }
+        const wasOn = setup.attachments[gsWeapon][slot.key];
+        if (OPTICS.includes(slot.key)) {
+          // Optics share a single mount — equipping one drops the others.
+          for (const o of OPTICS) setup.attachments[gsWeapon][o] = false;
+        }
+        setup.attachments[gsWeapon][slot.key] = !wasOn;
+        ui.unlock();
+        if (wasOn) ui.uiClick();
+        else {
+          ui.uiConfirm();
+          // Equip flash: restart the animation from a clean state.
+          card.classList.remove('flash');
+          void card.offsetWidth;
+          card.classList.add('flash');
+        }
+        gsRefreshCards();
+        gsRebuildGun();
+        gsUpdateSummary();
+        // Cursor still on the card: swap cyan ghost → gold inspect glow.
+        gsShowPreview(slot.key);
+        gsUpdateStats(slot.key);
+      });
       gsCardsEl.appendChild(card);
     }
     gsUpdateLines();
   }
 
   function gsSelectWeapon(i, name) {
+    gsClearPreview();
     gsSlot = i;
     gsWeapon = name;
+    const def = WEAPON_DEFS.find((d) => d.name === name);
     gsNameEl.textContent = WEAPON_LABELS[gsWeapon] || gsWeapon;
+    if (gsCatEl) gsCatEl.textContent = def ? def.category : '';
     gsBuildTabs();
     gsBuildCards();
     gsBuildSkins();
     gsBuildPicker();
     gsRebuildGun();
+    gsUpdateStats();
+    gsUpdateXpChip();
   }
 
   function gsBuildTabs() {
@@ -209,7 +453,10 @@ export function createGunsmithScreen(setup, getXp) {
       const tab = document.createElement('button');
       tab.className = 'gsTab' + (i === gsSlot ? ' active' : '');
       tab.textContent = `${i + 1}. ${WEAPON_LABELS[setup.loadout[i]] || '?'}`;
-      tab.addEventListener('click', () => gsSelectWeapon(i, setup.loadout[i]));
+      tab.addEventListener('click', () => {
+        ui.uiClick();
+        gsSelectWeapon(i, setup.loadout[i]);
+      });
       gsTabsEl.appendChild(tab);
     }
   }
@@ -234,6 +481,7 @@ export function createGunsmithScreen(setup, getXp) {
         btn.addEventListener('click', () => {
           const other = setup.loadout.indexOf(d.name);
           if (other === gsSlot) return;
+          ui.uiConfirm();
           // CoD rule: an owned weapon swaps slots instead of being equipped twice.
           if (other >= 0) setup.loadout[other] = setup.loadout[gsSlot];
           setup.loadout[gsSlot] = d.name;
@@ -253,6 +501,8 @@ export function createGunsmithScreen(setup, getXp) {
       el.title = skin.hint;
       el.innerHTML = `<div class="gsSwatch" style="background:${skin.swatch}"></div><div class="gsSkinName">${skin.label}</div>`;
       el.addEventListener('click', () => {
+        ui.unlock();
+        ui.uiConfirm();
         setup.skins[gsWeapon] = id;
         gsSkinsEl.querySelectorAll('.gsSkin').forEach((s) => s.classList.toggle('active', s === el));
         gsRebuildGun();
@@ -271,18 +521,26 @@ export function createGunsmithScreen(setup, getXp) {
     }
     const loadoutLine = setup.loadout.map((n, i) => `${i + 1}.${WEAPON_LABELS[n] || n}`).join(' · ');
     attachSummaryEl.textContent = `Loadout: ${loadoutLine}${parts.length ? ' — ' + parts.join(' · ') : ''}`;
+    gsUpdateStats();
   }
 
   function open() {
     gunsmithEl.classList.remove('hidden');
     gsSlot = 0;
     gsWeapon = setup.loadout[0];
+    const def = WEAPON_DEFS.find((d) => d.name === gsWeapon);
     gsBuildTabs();
     gsBuildCards();
     gsBuildSkins();
     gsBuildPicker();
     gsNameEl.textContent = WEAPON_LABELS[gsWeapon] || gsWeapon;
+    if (gsCatEl) gsCatEl.textContent = def ? def.category : '';
+    gsRot = -0.6;
+    gsRotVel = 0;
+    gsIdle = 0;
     gsRebuildGun();
+    gsUpdateStats();
+    gsUpdateXpChip();
     gsSizeCanvas();
     gsLastT = performance.now();
     gsRafId = requestAnimationFrame(gsRenderLoop);
@@ -292,10 +550,18 @@ export function createGunsmithScreen(setup, getXp) {
     cancelAnimationFrame(gsRafId);
     gsRafId = 0;
     gunsmithEl.classList.add('hidden');
+    gsClearPreview();
   }
 
-  document.getElementById('openGunsmithBtn').addEventListener('click', open);
-  document.getElementById('gsBackBtn').addEventListener('click', close);
+  document.getElementById('openGunsmithBtn').addEventListener('click', () => {
+    ui.unlock();
+    ui.uiConfirm();
+    open();
+  });
+  document.getElementById('gsBackBtn').addEventListener('click', () => {
+    ui.uiClick();
+    close();
+  });
   window.addEventListener('resize', () => { if (gsRafId) gsSizeCanvas(); });
 
   gsUpdateSummary();

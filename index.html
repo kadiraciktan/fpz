@@ -617,11 +617,38 @@
       color: #e8e4d8;
     }
     #gunsmithScreen.hidden { display: none; }
-    #gunsmithCanvas { position: absolute; inset: 0; width: 100%; height: 100%; }
-    #gsLines { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+    /* CRT scanlines + edge vignette over the 3D stage (below the UI layer) */
+    #gunsmithScreen::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      z-index: 4;
+      background: radial-gradient(ellipse at 50% 45%, transparent 52%, rgba(0, 0, 0, 0.6) 100%);
+    }
+    #gunsmithScreen::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      z-index: 5;
+      background: repeating-linear-gradient(0deg,
+        rgba(0, 0, 0, 0.18) 0 1px, transparent 1px 3px);
+      opacity: 0.5;
+    }
+    #gunsmithCanvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; }
+    #gunsmithCanvas:active { cursor: grabbing; }
+    #gsLines { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2; }
+    /* Corner brackets framing the preview stage */
+    .gsFrame { position: absolute; inset: 12px; pointer-events: none; z-index: 3; }
+    .gsFrame i { position: absolute; width: 28px; height: 28px; border: 2px solid rgba(79, 195, 247, 0.4); }
+    .gsFrame .tl { left: 0; top: 0; border-right: 0; border-bottom: 0; }
+    .gsFrame .tr { right: 0; top: 0; border-left: 0; border-bottom: 0; }
+    .gsFrame .bl { left: 0; bottom: 0; border-right: 0; border-top: 0; }
+    .gsFrame .br { right: 0; bottom: 0; border-left: 0; border-top: 0; }
     #gsWeaponName {
       position: absolute;
-      top: 21%;
+      top: 20%;
       left: 50%;
       transform: translateX(-50%);
       font-size: 26px;
@@ -631,7 +658,22 @@
       text-shadow: 0 2px 10px rgba(0,0,0,0.9);
       text-transform: uppercase;
       pointer-events: none;
+      z-index: 6;
     }
+    #gsWeaponCat {
+      position: absolute;
+      top: calc(20% + 38px);
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 11px;
+      letter-spacing: 5px;
+      color: #4fc3f7;
+      text-transform: uppercase;
+      text-shadow: 0 1px 6px rgba(0,0,0,0.9);
+      pointer-events: none;
+      z-index: 6;
+    }
+    #gsXpChip { position: absolute; top: 16px; right: 20px; z-index: 6; }
     #gsBackBtn {
       position: absolute;
       left: 20px; top: 18px;
@@ -644,6 +686,7 @@
       color: #b8c6da;
       cursor: pointer;
       text-transform: uppercase;
+      z-index: 7;
     }
     #gsBackBtn:hover { border-color: #4fc3f7; color: #fff; }
     #gsWeaponTabs {
@@ -653,14 +696,78 @@
       transform: translateX(-50%);
       display: flex;
       gap: 8px;
+      z-index: 6;
     }
-    /* Loadout picker: category-grouped weapon list (CoD gunsmith style) */
-    #gsPicker {
+    /* Left column: weapon stats on top, loadout picker below */
+    #gsLeftPanel {
       position: absolute;
       left: 14px;
       top: 64px;
       bottom: 70px;
-      width: 216px;
+      width: 224px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      z-index: 6;
+    }
+    #gsStats {
+      flex: 0 0 auto;
+      border: 1px solid rgba(110, 140, 180, 0.35);
+      background: rgba(10, 16, 26, 0.88);
+      border-radius: 6px;
+      padding: 10px 12px 12px;
+    }
+    .gsStatsTitle {
+      font-size: 10px;
+      letter-spacing: 3px;
+      color: #ffd54f;
+      border-bottom: 1px solid rgba(255, 213, 79, 0.25);
+      padding-bottom: 5px;
+      margin-bottom: 8px;
+    }
+    .gsStatsTitle.preview {
+      color: #4fc3f7;
+      border-bottom-color: rgba(79, 195, 247, 0.45);
+      text-shadow: 0 0 8px rgba(79, 195, 247, 0.5);
+    }
+    .gsCard:hover { z-index: 7; }
+    .gsStat { margin-bottom: 7px; }
+    .gsStat:last-child { margin-bottom: 0; }
+    .gsStatHead {
+      display: flex;
+      justify-content: space-between;
+      font-size: 10px;
+      letter-spacing: 1px;
+      color: #9fb4d0;
+    }
+    .gsStatHead b { color: #eef2f6; font-size: 11px; }
+    .gsStatHead .good { color: #9ccc65; font-weight: bold; }
+    .gsStatHead .bad { color: #ff8a65; font-weight: bold; }
+    .gsBar {
+      position: relative;
+      height: 6px;
+      background: rgba(255, 255, 255, 0.07);
+      border-radius: 3px;
+      margin-top: 3px;
+      overflow: hidden;
+    }
+    .gsBar i {
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      background: linear-gradient(90deg, #37474f, #90a4ae);
+      border-radius: 3px;
+      transition: width 0.25s ease-out;
+    }
+    .gsBar i.good { background: linear-gradient(90deg, #2e7d32, #9ccc65); }
+    .gsBar i.bad { background: linear-gradient(90deg, #7b2c1d, #ff8a65); }
+    .gsBar u {
+      position: absolute;
+      top: -1px; bottom: -1px;
+      width: 2px;
+      background: rgba(255, 255, 255, 0.55);
+    }
+    #gsPicker {
+      flex: 1 1 auto;
       overflow-y: auto;
       display: flex;
       flex-direction: column;
@@ -732,6 +839,7 @@
       width: 250px;
       cursor: pointer;
       user-select: none;
+      z-index: 6;
     }
     .gsCard .gsTitle {
       font-weight: bold;
@@ -765,6 +873,52 @@
     }
     .gsCard.equipped .gsBox::before { opacity: 1; }
     .gsCard.disabled { opacity: 0.35; cursor: not-allowed; }
+    /* Slot badge + stat delta chip on the card title */
+    .gsSlot {
+      float: right;
+      font-size: 9px;
+      color: #61748c;
+      border: 1px solid rgba(110, 140, 180, 0.35);
+      padding: 1px 5px;
+      border-radius: 3px;
+      letter-spacing: 1px;
+      font-weight: normal;
+    }
+    .gsChip {
+      display: inline-block;
+      font-size: 9px;
+      font-weight: normal;
+      padding: 1px 6px;
+      border-radius: 3px;
+      margin-left: 6px;
+      letter-spacing: 1px;
+      border: 1px solid;
+      vertical-align: 1px;
+    }
+    .gsChip.good { color: #9ccc65; border-color: rgba(156, 204, 101, 0.5); background: rgba(156, 204, 101, 0.1); }
+    .gsChip.bad { color: #ff8a65; border-color: rgba(255, 138, 101, 0.5); background: rgba(255, 138, 101, 0.1); }
+    .gsChip.info { color: #4fc3f7; border-color: rgba(79, 195, 247, 0.5); background: rgba(79, 195, 247, 0.1); }
+    /* XP progress bar on locked cards */
+    .gsXpBar {
+      height: 4px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 2px;
+      margin-top: 7px;
+      overflow: hidden;
+    }
+    .gsXpBar i {
+      display: block;
+      height: 100%;
+      background: linear-gradient(90deg, #ffb300, #ffd54f);
+      border-radius: 2px;
+    }
+    /* Equip flash */
+    @keyframes gsFlash {
+      0%   { box-shadow: 0 0 0 rgba(79, 195, 247, 0); border-color: #4fc3f7; }
+      30%  { box-shadow: 0 0 30px rgba(79, 195, 247, 0.95); border-color: #b3e5fc; }
+      100% { box-shadow: 0 0 14px rgba(79, 195, 247, 0.35); }
+    }
+    .gsCard.flash .gsBox { animation: gsFlash 0.5s ease-out; }
     .gsWName { font-size: 12px; color: #9fb4d0; margin-bottom: 4px; }
     .gsMini { display: flex; align-items: center; justify-content: space-between; }
     .gsMini svg { width: 120px; height: 26px; fill: #c9d6e6; }
@@ -777,14 +931,24 @@
     }
     .gsStatus { font-size: 10px; letter-spacing: 1px; color: #61748c; margin-top: 4px; }
     .gsCard.equipped .gsStatus { color: #4fc3f7; }
-    .pos-tl { top: 6%; left: 8%; }
+    /* Ring layout. Left-column cards start AFTER the stats/picker column
+       (14px + 224px + gap) so they never slide under the weapon list. */
+    .pos-tl { top: 6%; left: 264px; }
     .pos-tc { top: 6%; left: 50%; transform: translateX(-50%); }
     .pos-tr { top: 6%; right: 8%; }
-    .pos-ml { top: 44%; left: 3%; }
+    .pos-ml { top: 44%; left: 264px; }
     .pos-mr { top: 44%; right: 3%; }
-    .pos-bl { bottom: 15%; left: 9%; }
+    .pos-bl { bottom: 15%; left: 264px; }
     .pos-bc { bottom: 15%; left: 50%; transform: translateX(-50%); }
     .pos-br { bottom: 15%; right: 9%; }
+    @media (max-width: 1400px) {
+      #gsLeftPanel { width: 196px; }
+      .gsCard { width: 204px; }
+      .pos-tl, .pos-ml, .pos-bl { left: 220px; }
+      .gsMini svg { width: 96px; height: 21px; }
+      .gsCard .gsTitle { font-size: 12px; }
+      .gsMini .gsStatus, .gsStatus { font-size: 9px; }
+    }
     #gsSkins {
       position: absolute;
       bottom: 7.5%;
@@ -793,6 +957,7 @@
       display: flex;
       align-items: flex-end;
       gap: 12px;
+      z-index: 6;
     }
     #gsSkins .gsSkinsLabel {
       font-size: 11px;
@@ -1030,10 +1195,16 @@
   <div id="gunsmithScreen" class="hidden">
     <canvas id="gunsmithCanvas"></canvas>
     <svg id="gsLines"></svg>
+    <div class="gsFrame"><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i></div>
     <div id="gsWeaponName">TABANCA</div>
+    <div id="gsWeaponCat"></div>
+    <div class="xpChip" id="gsXpChip">⭐ 0 XP</div>
     <button id="gsBackBtn">← Geri</button>
     <div id="gsCards"></div>
-    <div id="gsPicker"></div>
+    <div id="gsLeftPanel">
+      <div id="gsStats"></div>
+      <div id="gsPicker"></div>
+    </div>
     <div id="gsSkins"></div>
     <div id="gsWeaponTabs"></div>
   </div>

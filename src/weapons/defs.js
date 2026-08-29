@@ -166,14 +166,14 @@ export const HANDS_RELOAD_CLIP = {
  *  lightStock  (stock)    — +40% longer slide
  */
 export const ATTACHMENTS = {
-  suppressor: { label: 'Susturucu', slot: 'NAMLU', hint: 'Sessiz atış, flaş yok, -1 hasar', xp: 100 },
-  reflex: { label: 'Refleks Nişangâh', slot: 'OPTİK', hint: 'Kırmızı nokta, hafif zoom (60°)', xp: 0 },
-  holo: { label: 'Holo Nişangâh', slot: 'OPTİK', hint: 'Holografik turuncu reticle (58°)', xp: 100 },
-  acog: { label: 'ACOG Dürbün', slot: 'OPTİK', hint: '4x yakın, chevron reticle (45°)', xp: 260 },
-  scope: { label: 'Keskin Nişan Dürbünü', slot: 'OPTİK', hint: '8x zoom, nişan çizgileri (30°)', xp: 400 },
-  foregrip: { label: 'Ön Tutacak', slot: 'ALT NAP', hint: 'Daha hızlı nişan, azalan koşu salınımı', xp: 180 },
-  extendedMag: { label: 'Geniş Şarjör', slot: 'ŞARJÖR', hint: '+%50 mermi', xp: 260 },
-  lightStock: { label: 'Hafif Dipçik', slot: 'DİPÇİK', hint: '+%40 daha uzun kayma', xp: 320 },
+  suppressor: { label: 'Susturucu', slot: 'NAMLU', hint: 'Sessiz atış, flaş yok, -1 hasar', chip: '−1 HASAR', chipKind: 'bad', xp: 100 },
+  reflex: { label: 'Refleks Nişangâh', slot: 'OPTİK', hint: 'Kırmızı nokta, hafif zoom (60°)', chip: '60° ZOOM', chipKind: 'info', xp: 0 },
+  holo: { label: 'Holo Nişangâh', slot: 'OPTİK', hint: 'Holografik turuncu reticle (58°)', chip: '58° ZOOM', chipKind: 'info', xp: 100 },
+  acog: { label: 'ACOG Dürbün', slot: 'OPTİK', hint: '4x yakın, chevron reticle (45°)', chip: '45° ZOOM', chipKind: 'info', xp: 260 },
+  scope: { label: 'Keskin Nişan Dürbünü', slot: 'OPTİK', hint: '8x zoom, nişan çizgileri (30°)', chip: '30° ZOOM', chipKind: 'info', xp: 400 },
+  foregrip: { label: 'Ön Tutacak', slot: 'ALT NAP', hint: 'Daha hızlı nişan, azalan koşu salınımı', chip: '+ADS +DURUŞ', chipKind: 'good', xp: 180 },
+  extendedMag: { label: 'Geniş Şarjör', slot: 'ŞARJÖR', hint: '+%50 mermi', chip: '+%50 MERMİ', chipKind: 'good', xp: 260 },
+  lightStock: { label: 'Hafif Dipçik', slot: 'DİPÇİK', hint: '+%40 daha uzun kayma', chip: '+%40 KAYMA', chipKind: 'good', xp: 320 },
 };
 
 /**
