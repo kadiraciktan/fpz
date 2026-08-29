@@ -37,6 +37,17 @@ import {
  * imports keep working.
  */
 
+/**
+ * Weapon-swap choreography (seconds). The gun lowers out of view, the mesh
+ * actually changes at the bottom of the arc, then the new gun is raised.
+ * Firing / reloading / ADS are locked for the whole duration.
+ */
+const SWAP_TIME = 0.45;
+/** Fraction of SWAP_TIME spent lowering (the mesh swap happens at its end). */
+const SWAP_LOWER = 0.5;
+/** Seconds left on the clock when the meshes are exchanged. */
+const SWAP_CUT_T = SWAP_TIME * (1 - SWAP_LOWER);
+
 export {
   WEAPON_DEFS,
   WEAPON_LABELS,
@@ -115,6 +126,12 @@ export class WeaponManager {
     // Melee (bayonet) state — V key.
     this._meleeCd = 0;
     this._meleeT = 0;
+
+    // Weapon-swap animation: countdown clock + the slot picked at the bottom
+    // of the lower arc (null while not swapping).
+    this._swapT = 0;
+    this._swapPending = null;
+    this._swapGrant = null;
 
     // Noisemakers (G key): bounce around, then lure nearby zombies.
     this.noisemakers = 2;
@@ -199,8 +216,10 @@ export class WeaponManager {
 
   /**
    * Mystery-box gift: replace the ACTIVE slot with a new gun and draw it.
-   * If the weapon is already in the loadout, it is topped up instead and
-   * null is returned (no slot was replaced).
+   * The swap runs through the same lower/raise choreography as a manual
+   * switch (the mesh changes at the bottom of the arc). If the weapon is
+   * already in the loadout, it is topped up instead and null is returned
+   * (no slot was replaced).
    */
   grantWeapon(name) {
     const owned = this.weapons.findIndex((w) => w.def.name === name);
@@ -211,16 +230,50 @@ export class WeaponManager {
       this.switchTo(owned);
       return null;
     }
-    // _attachActiveGun() removes the previous gun from the camera; free the
-    // per-gun skin materials it leaves behind (geometry is shared/cached).
-    const old = this.active;
-    old.mesh.traverse((o) => {
-      if (o.isMesh && o.material && o.material.map) o.material.dispose();
-    });
-    this.weapons[this.activeIndex] = this._makeWeapon(name);
+    this._commitSwap(); // finish any half-done swap before re-targeting
+    this._swapGrant = name;
+    this._swapPending = null;
+    this._swapT = SWAP_TIME;
+    this.sfx.weaponSwap();
+    return name;
+  }
+
+  /** True while the lower/raise swap choreography is playing. */
+  get swapping() {
+    return this._swapT > 0;
+  }
+
+  /** Advance the swap clock; hand the gun over at the bottom of the arc. */
+  _updateSwap(dt) {
+    if (this._swapT <= 0) return;
+    const before = this._swapT;
+    this._swapT = Math.max(0, this._swapT - dt);
+    if (before > SWAP_CUT_T && this._swapT <= SWAP_CUT_T) this._commitSwap();
+  }
+
+  /** Do the actual mesh/HUD swap (called at the bottom of the lower arc). */
+  _commitSwap() {
+    const grant = this._swapGrant;
+    const index = this._swapPending;
+    this._swapGrant = null;
+    this._swapPending = null;
+    if (grant) {
+      // _attachActiveGun() removes the previous gun from the camera; free the
+      // per-gun skin materials it leaves behind (geometry is shared/cached).
+      const old = this.active;
+      old.mesh.traverse((o) => {
+        if (o.isMesh && o.material && o.material.map) o.material.dispose();
+      });
+      this.weapons[this.activeIndex] = this._makeWeapon(grant);
+    } else if (index != null) {
+      this.activeIndex = index;
+      this.active.reloading = false;
+    } else {
+      return;
+    }
     this._attachActiveGun();
     this._updateHUD();
-    return this.activeDef.name;
+    if (this.callbacks.onWeaponChange) this.callbacks.onWeaponChange(this.activeDef.name);
   }
 
   /** MAX ammo pickup: every gun full, magazine + reserve. */
@@ -260,7 +313,16 @@ export class WeaponManager {
       this.camera.remove(this._currentGun);
     }
     const gun = this.active.mesh;
-    gun.position.set(0.25, -0.2, -0.5);
+    if (!this._gunBase) this._gunBase = new THREE.Vector3(0.25, -0.2, -0.5);
+    // A normal switch restarts from the hip pose; a mid-swap attach must KEEP
+    // the current (lowered) anchor so the new gun appears exactly where the
+    // old one vanished and the raise arc can continue.
+    if (this._swapT <= 0) {
+      this._gunBase.set(0.25, -0.2, -0.5);
+      this._gunBaseRotX = 0;
+      this._gunBaseRotZ = 0;
+    }
+    gun.position.copy(this._gunBase);
     this.camera.add(gun);
     this._currentGun = gun;
     // Let the controller apply run-bob + recoil to this gun (main.js creates
@@ -268,8 +330,6 @@ export class WeaponManager {
     if (this.controller.setGun) this.controller.setGun(gun);
     // Attachment modifiers (foregrip steadiness, light-stock slide length).
     if (this.controller.setWeaponMods) this.controller.setWeaponMods(this.active.att);
-    this._gunBase = new THREE.Vector3(0.25, -0.2, -0.5);
-    this._gunBaseRotZ = 0;
 
     // Parent the hands to the gun so they follow it through every anim.
     if (this._hands) {
@@ -279,21 +339,32 @@ export class WeaponManager {
     }
   }
 
+  /**
+   * Start a weapon swap. The guns are NOT exchanged here — that happens
+   * SWAP_LOWER into the animation (see _commitSwap), so spamming the keys
+   * only re-targets the slot instead of teleporting guns across the screen.
+   */
   switchTo(index) {
     if (index < 0 || index >= this.weapons.length) return;
-    this.activeIndex = index;
-    this.active.reloading = false;
-    this._attachActiveGun();
-    this._updateHUD();
-    if (this.callbacks.onWeaponChange) this.callbacks.onWeaponChange(this.activeDef.name);
+    if (index === this.activeIndex && this._swapT <= 0) return;
+    if (index === this._swapPending) return; // already on its way there
+    if (this._swapGrant) this._commitSwap(); // a pending box gift must not be lost
+    this._swapPending = index;
+    this._swapT = SWAP_TIME;
+    this.sfx.weaponSwap();
+  }
+
+  /** Slot the player is heading to (mid-swap this is not yet `activeIndex`). */
+  get _wantedIndex() {
+    return this._swapPending ?? this.activeIndex;
   }
 
   switchNext() {
-    this.switchTo((this.activeIndex + 1) % this.weapons.length);
+    this.switchTo((this._wantedIndex + 1) % this.weapons.length);
   }
 
   switchPrev() {
-    this.switchTo((this.activeIndex - 1 + this.weapons.length) % this.weapons.length);
+    this.switchTo((this._wantedIndex - 1 + this.weapons.length) % this.weapons.length);
   }
 
   /** Gamepad input bridge (trigger held / ADS held). */
@@ -350,7 +421,7 @@ export class WeaponManager {
   /** Bayonet slash (V): silent, short range, heavy damage. */
   _tryMelee() {
     if (document.pointerLockElement !== this.controller.domElement) return;
-    if (this._meleeCd > 0 || this.active.reloading) return;
+    if (this._meleeCd > 0 || this.active.reloading || this.swapping) return;
     this._meleeCd = 0.85;
     this._meleeT = 0.35;
     this.sfx.meleeWhoosh();
@@ -466,7 +537,7 @@ export class WeaponManager {
 
   _tryShoot() {
     const w = this.active;
-    if (w.reloading || w.fireCooldown > 0) return;
+    if (w.reloading || w.fireCooldown > 0 || this.swapping) return;
     if (w.ammo <= 0) {
       this.reload();
       return;
@@ -599,7 +670,7 @@ export class WeaponManager {
 
   reload() {
     const w = this.active;
-    if (w.reloading || w.ammo === w.def.magazineSize) return;
+    if (w.reloading || w.ammo === w.def.magazineSize || this.swapping) return;
     // Finite reserve: an empty reserve means no reload — dry click instead.
     if (reloadTransfer(w.ammo, w.def.magazineSize, w.reserve) <= 0) {
       if (this._dryCd <= 0) {
@@ -625,8 +696,10 @@ export class WeaponManager {
   _updateAiming(dt) {
     const w = this.active;
     const optic = activeOptic(w.att);
-    const scoped = optic === 'scope' && this._aiming;
-    const targetFov = this._aiming ? (optic ? OPTIC_FOV[optic] : 55) : this.hipFov || 75;
+    // Mid-swap the gun is out of hand: force hip-fire until it is raised.
+    const swapping = this._swapT > 0;
+    const scoped = optic === 'scope' && this._aiming && !swapping;
+    const targetFov = this._aiming && !swapping ? (optic ? OPTIC_FOV[optic] : 55) : this.hipFov || 75;
     // Foregrip speeds up the aim-down-sights transition.
     const speed = w.att.foregrip ? 18 : 12;
     if (Math.abs(this.camera.fov - targetFov) > 0.05) {
@@ -638,7 +711,7 @@ export class WeaponManager {
     if (scopeEl) scopeEl.classList.toggle('show', scoped);
     // Aiming through any optic: the optic's own reticle is the aim point,
     // so the HUD crosshair steps aside.
-    if (crossEl) crossEl.style.display = optic && this._aiming ? 'none' : '';
+    if (crossEl) crossEl.style.display = optic && this._aiming && !swapping ? 'none' : '';
   }
 
   _updateReloadAnim(dt) {
@@ -662,7 +735,7 @@ export class WeaponManager {
       : this._aiming && sightY != null
         ? [0, -sightY, -0.45]
         : this._aiming ? [0, -0.12, -0.45] : [0.25, -0.2, -0.5];
-    let bx = ax, by = ay, bz = az, brz = 0;
+    let bx = ax, by = ay, bz = az, brx = 0, brz = 0;
     if (w.reloading) {
       const total = w.reloadDur || w.def.reloadTime;
       const t = Math.min(1, (total - w.reloadTimer) / total);
@@ -671,22 +744,37 @@ export class WeaponManager {
       bz += s * 0.08;
       brz = s * 0.15;
     }
+    // Swap choreography: whole-gun lower/raise arc that OVERRIDES the ADS and
+    // reload poses (sin over the full window = down, mesh swap, back up).
+    const swapping = this._swapT > 0;
+    if (swapping) {
+      const p = THREE.MathUtils.clamp(1 - this._swapT / SWAP_TIME, 0, 1);
+      const s = Math.sin(p * Math.PI);
+      bx = 0.25;
+      by = -0.2 - s * 0.34;
+      bz = -0.5 + s * 0.26;
+      brx = -s * 0.62;
+      brz = s * 0.5;
+    }
     // Melee thrust overlay: quick stab out-and-back.
-    if (this._meleeT > 0) {
+    if (this._meleeT > 0 && !swapping) {
       const s = Math.sin((1 - this._meleeT / 0.35) * Math.PI);
       bz -= s * 0.34;
       by += s * 0.03;
       brz -= s * 0.25;
     }
-    const k = Math.min(1, dt * 8);
+    // The swap arc is fast — a slow follow-up lerp would flatten the dip.
+    const k = Math.min(1, dt * (swapping ? 26 : 8));
     this._gunBase = this._gunBase || new THREE.Vector3(0.25, -0.2, -0.5);
     this._gunBaseTarget = this._gunBaseTarget || new THREE.Vector3();
     this._gunBaseRotZ = this._gunBaseRotZ ?? 0;
+    this._gunBaseRotX = this._gunBaseRotX ?? 0;
     this._gunBaseTarget.set(bx, by, bz);
     this._gunBase.lerp(this._gunBaseTarget, k);
     this._gunBaseRotZ += (brz - this._gunBaseRotZ) * k;
+    this._gunBaseRotX += (brx - this._gunBaseRotX) * k;
     this.controller.setGunBasePosition(this._gunBase.x, this._gunBase.y, this._gunBase.z);
-    this.controller.setGunBaseRotation(0, 0, this._gunBaseRotZ);
+    this.controller.setGunBaseRotation(this._gunBaseRotX, 0, this._gunBaseRotZ);
 
     // Part-level reload keyframes (slide, bolt, pump...) when the weapon has
     // them; scale the clip so it spans exactly the reload duration.
@@ -720,6 +808,8 @@ export class WeaponManager {
   }
 
   update(dt) {
+    // Swap first: it can replace `this.active`, so read the weapon afterwards.
+    this._updateSwap(dt);
     const w = this.active;
     this._updateAiming(dt);
     if (this._firing) this._tryShoot();

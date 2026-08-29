@@ -780,7 +780,9 @@ function buildGame() {
       gamepad.rumble(gift.rarity === 'EFSANE' || gift.rarity === 'NADIR' ? 0.9 : 0.5, 0.8, 220);
       showToast(
         granted
-          ? `🎲 ${gift.rarity}: ${weaponManager.activeDef.label}!`
+          ? `🎲 ${gift.rarity}: ${
+              (WEAPON_DEFS.find((d) => d.name === granted) || weaponManager.activeDef).label
+            }!`
           : `🎲 Aynısından vardı — cephane doldu (${gift.rarity})`
       );
     }

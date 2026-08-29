@@ -570,6 +570,28 @@ export class Sfx {
     }
   }
 
+  /** Weapon swap: stock/hand rustle plus two metal bolt clacks. */
+  weaponSwap() {
+    if (!this.ctx) return;
+    const t = this._now();
+    const noise = this._noiseBuffer(0.16);
+    const src = this.ctx.createBufferSource();
+    src.buffer = noise;
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(900, t);
+    lp.frequency.exponentialRampToValueAtTime(300, t + 0.14);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.001, t);
+    g.gain.linearRampToValueAtTime(0.14, t + 0.03);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+    src.connect(lp).connect(g).connect(this.master);
+    src.start(t);
+    src.stop(t + 0.16);
+    this._clack(t + 0.02, 1300, 0.05, 0.3);
+    this._clack(t + 0.2, 1900, 0.05, 0.24);
+  }
+
   /** Menu/Gunsmith UI blip (hover-level click). */
   uiClick() {
     if (!this.ctx) return;
