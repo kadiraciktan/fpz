@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildTexture } from '../src/ModelLoader.js';
+import { buildTexture } from '../src/gfx/ModelLoader.js';
 import { zombieTexture } from '../textures/zombie.js';
 import { hudRoundTexture } from '../textures/hud-round.js';
 

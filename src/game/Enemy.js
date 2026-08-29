@@ -1,12 +1,12 @@
 import * as THREE from 'three';
-import { buildModel } from './ModelLoader.js';
-import { Animator } from './Animation.js';
-import { BARRIER_CHEW_RATE } from './game/zombies.js';
-import { insertHash, queryHash } from './game/spatial.js';
-import { circleHitsOBB, resolveCircleOBB } from './game/collision.js';
-import { zombieModel } from '../models/zombie.js';
-import { headcrabModel } from '../models/headcrab.js';
-import { zombieTexture, zombieSprinterTexture, zombieBruteTexture, zombieBomberTexture, headcrabTexture } from '../textures/zombie.js';
+import { buildModel } from '../gfx/ModelLoader.js';
+import { Animator } from '../anims/Animation.js';
+import { BARRIER_CHEW_RATE } from './zombies.js';
+import { insertHash, queryHash } from './spatial.js';
+import { circleHitsOBB, resolveCircleOBB } from './collision.js';
+import { zombieModel } from '../../models/zombie.js';
+import { headcrabModel } from '../../models/headcrab.js';
+import { zombieTexture, zombieSprinterTexture, zombieBruteTexture, zombieBomberTexture, headcrabTexture } from '../../textures/zombie.js';
 
 /**
  * Enemy.js
@@ -146,6 +146,12 @@ export class Enemy {
     this._sandbags = options.sandbags || null;
     // Opened CoD-style barriers: the horde chews them back shut (defend!).
     this._barriers = options.barriers || null;
+    // Open window waypoints: detour through a gap when walls block the chase.
+    this._windows = options.windows || null;
+    this._routeWin = null;
+    this._routeT = Math.random() * 0.4; // stagger re-plans across the horde
+    this._routeClose = false;
+    this._routeVec = new THREE.Vector3();
     // Lazy accessor for the live enemy list (used for crowding/avoidance).
     this._getPeers = options.getPeers || null;
 
@@ -292,22 +298,29 @@ export class Enemy {
 
     if (target === playerPos && dist > this.params.attackRange) {
       dir.normalize();
+      // Windowed maps: detour to the best window when walls block the
+      // straight chase (and press into it to chew the planks off).
+      const moveDir = (this._windows && this._windows.length)
+        ? this._routeDir(dt, dir, dist, playerPos)
+        : dir;
       if (this.hopper) {
         // Grounded between hops: wait out the cooldown, then pounce.
         // The ballistics block at the top of update() carries us in flight.
-        if (!this._airborne) this._creepOrHop(dt, dir, dist);
+        if (!this._airborne) this._creepOrHop(dt, moveDir, dist);
       } else {
-        const steer = this._steer(pos, dir);
+        // Right at the targeted window the side-step steering would slide
+        // us away along the wall — walk straight in instead.
+        const steer = this._routeClose ? moveDir : this._steer(pos, moveDir);
         this.group.position.addScaledVector(steer, this.params.speed * dt);
         this._collideObstacles();
         if (playerDistSq < LOD_SEPARATE_SQ) {
           this._separate();
           this._collideObstacles();
         }
-        this._watchStuck(dt, dir);
+        this._watchStuck(dt, moveDir);
         if (playerDistSq < LOD_CHEW_SQ) {
-          this._chewSandbags(dt, dir);
-          this._chewBarriers(dt, dir);
+          this._chewSandbags(dt, moveDir);
+          this._chewBarriers(dt, moveDir);
         }
 
         // Face where we're actually walking (drifts off at corners)
@@ -599,6 +612,58 @@ export class Enemy {
       if (toGate.dot(moveDir) < 0.3) continue;
       b.hp -= BARRIER_CHEW_RATE * dt;
     }
+  }
+
+  /**
+   * Movement direction with window routing: when the straight line to the
+   * player is walled off, head for the cheapest opening instead.
+   * Re-planned on a staggered ~0.4 s cadence, not per frame.
+   */
+  _routeDir(dt, dir, dist, playerPos) {
+    this._routeT -= dt;
+    if (this._routeT <= 0) {
+      this._routeT = 0.35 + Math.random() * 0.3;
+      this._routeWin = this._pickWindow(dir, dist, playerPos);
+    }
+    const w = this._routeWin;
+    this._routeClose = false;
+    if (!w) return dir;
+    const p = this.group.position;
+    const dx = w.x - p.x;
+    const dz = w.z - p.z;
+    const d2 = dx * dx + dz * dz;
+    if (d2 < 1.44) {
+      // Through the opening — resume the chase.
+      this._routeWin = null;
+      return dir;
+    }
+    this._routeClose = d2 < 9;
+    return this._routeVec.set(dx, 0, dz).normalize();
+  }
+
+  /** Cheapest window detour (zombie→window→player), or null if the direct
+   *  line looks clear. */
+  _pickWindow(dir, dist, playerPos) {
+    if (dist < 3.5) return null;
+    const p = this.group.position;
+    const look = Math.min(5, dist - 0.4);
+    if (!this._blockedAhead(p, dir.x, dir.z, 2.2)
+      && !this._blockedAhead(p, dir.x, dir.z, 3.4)
+      && !this._blockedAhead(p, dir.x, dir.z, look)) return null;
+    let best = null;
+    let bestCost = Infinity;
+    for (let i = 0; i < this._windows.length; i++) {
+      const w = this._windows[i];
+      const dzw = Math.hypot(w.x - p.x, w.z - p.z);
+      if (dzw > 30) continue;
+      const dwp = Math.hypot(w.x - playerPos.x, w.z - playerPos.z);
+      const cost = dzw + dwp;
+      if (cost < bestCost) {
+        bestCost = cost;
+        best = w;
+      }
+    }
+    return best;
   }
 
   /**

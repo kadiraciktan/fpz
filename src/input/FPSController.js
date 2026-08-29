@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { resolveCircleOBB } from './game/collision.js';
+import { resolveCircleOBB } from '../game/collision.js';
 
 /**
  * FPSController.js

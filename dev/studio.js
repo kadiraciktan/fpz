@@ -9,7 +9,7 @@
  *   tarayıcıda: http://localhost:8080/dev/studio.html
  */
 import * as THREE from 'three';
-import { buildModel, buildTexture } from '../src/ModelLoader.js';
+import { buildModel, buildTexture } from '../src/gfx/ModelLoader.js';
 import { pistolModel } from '../models/pistol.js';
 import { rifleModel } from '../models/rifle.js';
 import { shotgunModel } from '../models/shotgun.js';

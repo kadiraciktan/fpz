@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { Animator } from '../src/Animation.js';
-import { buildModel } from '../src/ModelLoader.js';
+import { Animator } from '../src/anims/Animation.js';
+import { buildModel } from '../src/gfx/ModelLoader.js';
 import { zombieModel } from '../models/zombie.js';
 import { zombieTexture } from '../textures/zombie.js';
 

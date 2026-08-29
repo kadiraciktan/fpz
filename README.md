@@ -24,25 +24,36 @@ python3 -m http.server 8080
 ├── index.html              # Game entry point (importmap → three@0.160.0)
 ├── src/
 │   ├── main.js             # Game loop, rounds, scoring, HUD, pause settings
-│   ├── Scene.js            # Environment: ground, walls, streetlamps, sky
-│   ├── FPSController.js    # Pointer-lock FPS camera, WASD + jump + crouch
-│   ├── Gamepad.js          # Gamepad API bridge (sticks, triggers, buttons)
-│   ├── Weapons.js          # WeaponManager facade (ammo, tracers, reload)
+│   ├── gfx/
+│   │   ├── Scene.js        #   Re-exports createScene / MAPS from src/maps/
+│   │   ├── ModelLoader.js  #   buildModel() + buildTexture() pipeline
+│   │   └── Prefabs.js      #   Reusable scene objects (lamps, crates, barriers)
+│   ├── sfx/
+│   │   └── Sound.js        #   Web Audio procedural SFX + tension music
+│   ├── anims/
+│   │   └── Animation.js    #   Keyframe Animator (pos/rot/scale, lerp, onEnd)
+│   ├── input/
+│   │   ├── FPSController.js#   Pointer-lock FPS camera, WASD + jump + crouch
+│   │   └── Gamepad.js      #   Gamepad API bridge (sticks, triggers, buttons)
+│   ├── maps/
+│   │   ├── index.js        #   Map registry + scene factory
+│   │   ├── kit.js          #   Shared lights, props, sky helpers
+│   │   ├── street.js       #   Savaş Sokakları
+│   │   ├── factory.js      #   Terk Edilmiş Fabrika
+│   │   ├── bunker.js       #   Yeraltı Sığınağı
+│   │   └── nacht.js        #   Nacht der Untoten
 │   ├── weapons/
+│   │   ├── Weapons.js      #   WeaponManager facade (ammo, tracers, reload)
 │   │   ├── defs.js         #   Weapon stats, attachment/skin metadata, box pool
 │   │   ├── ammo.js         #   Pure ammo-economy math (reserve, weighted picks)
 │   │   ├── attachments.js  #   Optic/suppressor/grip/mag/stock builders
 │   │   └── viewmodels.js   #   Gun, hands and first-person legs meshes
 │   ├── game/
+│   │   ├── Enemy.js        #   Zombie AI: walk/attack/death + Animator
 │   │   ├── waves.js        #   Pure wave scaling + special round formulas
 │   │   └── zombies.js      #   Difficulty, Pack-a-Punch, grenade & barrier math
-│   ├── ui/
-│   │   └── gunsmith.js     #   Gunsmith screen (preview renderer, cards)
-│   ├── Enemy.js            # Zombie AI: walk/attack/death + Animator (+ hopping headcrab mode)
-│   ├── ModelLoader.js      # buildModel() + buildTexture() pipeline
-│   ├── Animation.js        # Keyframe Animator (pos/rot/scale, lerp, onEnd)
-│   ├── Sound.js            # Web Audio procedural SFX + tension music
-│   └── Prefabs.js          # Reusable scene objects (lamps, crates, barriers)
+│   └── ui/
+│       └── gunsmith.js     #   Gunsmith screen (preview renderer, cards)
 ├── models/
 │   ├── pistol.js           # M1911 — 11 parts, fire + reload anims
 │   ├── rifle.js            # M1 Garand — 9 parts, fire + reload anims
@@ -103,7 +114,7 @@ anims: {
 - **Keyframe values are deltas** relative to the part's rest pose.
 - `t` is normalized [0, 1]; interpolation is linear.
 - The special key `root` targets the model's root group.
-- The `Animator` class (`src/Animation.js`) handles play/stop/loop/onEnd.
+- The `Animator` class (`src/anims/Animation.js`) handles play/stop/loop/onEnd.
 
 ### Model Part Pivots
 
@@ -222,6 +233,13 @@ becomes a valid zombie spawn area:
 | Terk Edilmiş Fabrika | west gate | 500 | Scrap hangar (west) |
 | Yeraltı Sığınağı | south blast door | 500 | Reactor storage wing |
 | Yeraltı Sığınağı | north blast door | 700 | Barracks wing |
+| Nacht der Untoten | west door | 750 | West wing + north help room |
+| Nacht der Untoten | east door | 1000 | East wing (stairs room) |
+
+Nacht extra: boarded windows are open climb-throughs — zombies step over
+the low sill, the player can vault it with a jump. Buying one Nacht door
+opens a kite loop through the north help room; the second door completes
+the circuit back through spawn.
 
 ## Weapons
 

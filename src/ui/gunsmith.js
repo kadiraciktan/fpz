@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Sfx } from '../Sound.js';
+import { Sfx } from '../sfx/Sound.js';
 import {
   WEAPON_DEFS,
   WEAPON_LABELS,
@@ -12,7 +12,7 @@ import {
   attachmentAvailable,
   buildAttachmentMeshes,
   ATTACH_ANCHORS,
-} from '../Weapons.js';
+} from '../weapons/Weapons.js';
 
 /**
  * ui/gunsmith.js

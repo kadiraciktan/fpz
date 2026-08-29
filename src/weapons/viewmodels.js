@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { buildModel } from '../ModelLoader.js';
-import { Animator } from '../Animation.js';
+import { buildModel } from '../gfx/ModelLoader.js';
+import { Animator } from '../anims/Animation.js';
 import { weaponTexture } from '../../textures/weapon.js';
 import { shotgunTexture } from '../../textures/shotgun.js';
 import { pistolModel } from '../../models/pistol.js';

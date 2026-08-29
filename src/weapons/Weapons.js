@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Sfx } from './Sound.js';
+import { Sfx } from '../sfx/Sound.js';
 import {
   WEAPON_DEFS,
   WEAPON_LABELS,
@@ -12,9 +12,9 @@ import {
   activeOptic,
   SKINS,
   MYSTERY_POOL,
-} from './weapons/defs.js';
-import { initialReserve, reloadTransfer, AMMO_CRATE_FACTOR } from './weapons/ammo.js';
-import { papStats, papLabel, GRENADE_FUSE } from './game/zombies.js';
+} from './defs.js';
+import { initialReserve, reloadTransfer, AMMO_CRATE_FACTOR } from './ammo.js';
+import { papStats, papLabel, GRENADE_FUSE } from '../game/zombies.js';
 import {
   ATTACH_ANCHORS,
   attachmentAvailable,
@@ -22,21 +22,19 @@ import {
   buildIronSights,
   opticSightHeight,
   opticSightDepth,
-} from './weapons/attachments.js';
+} from './attachments.js';
 import {
   applyViewmodelSettings,
   applySkin,
   createGunMesh,
   createHandsMesh,
   createLegsMesh,
-} from './weapons/viewmodels.js';
+} from './viewmodels.js';
 
 /**
  * Weapons.js
- * WeaponManager facade. Static data lives in weapons/defs.js, attachment
- * builders in weapons/attachments.js, viewmodel builders in
- * weapons/viewmodels.js — everything is re-exported here so existing
- * imports keep working.
+ * WeaponManager facade. Static data lives in defs.js, attachment
+ * builders in attachments.js, viewmodel builders in viewmodels.js.
  */
 
 /**

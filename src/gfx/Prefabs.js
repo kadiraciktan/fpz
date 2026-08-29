@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { buildModel } from './ModelLoader.js';
-import { woodTexture } from '../textures/wood.js';
-import { lampTexture } from '../textures/lamp.js';
-import { streetLampModel } from '../models/streetlamp.js';
+import { woodTexture } from '../../textures/wood.js';
+import { lampTexture } from '../../textures/lamp.js';
+import { streetLampModel } from '../../models/streetlamp.js';
 
 /**
  * Prefabs.js

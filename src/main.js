@@ -1,11 +1,11 @@
 import * as THREE from 'three';
-import { createScene, flickerLights, MAPS } from './Scene.js';
-import { FPSController } from './FPSController.js';
-import { WeaponManager, createLegsMesh, ATTACHMENTS, WEAPON_DEFS, WEAPON_LABELS, DEFAULT_LOADOUT, MYSTERY_POOL } from './Weapons.js';
+import { createScene, flickerLights, MAPS } from './gfx/Scene.js';
+import { FPSController } from './input/FPSController.js';
+import { WeaponManager, createLegsMesh, ATTACHMENTS, WEAPON_DEFS, WEAPON_LABELS, DEFAULT_LOADOUT, MYSTERY_POOL } from './weapons/Weapons.js';
 import { createGunsmithScreen } from './ui/gunsmith.js';
-import { Enemy } from './Enemy.js';
-import { createSandbag, createPerkMachine, markMachineSold, createWallGun, createPapMachine, retintLabelSign } from './Prefabs.js';
-import { GamepadInput, GamepadMenuNav } from './Gamepad.js';
+import { Enemy } from './game/Enemy.js';
+import { createSandbag, createPerkMachine, markMachineSold, createWallGun, createPapMachine, retintLabelSign } from './gfx/Prefabs.js';
+import { GamepadInput, GamepadMenuNav } from './input/Gamepad.js';
 import { waveCount, waveParams, pickEnemyType, isBossRound, bossCount, isSprintRound, isHeadcrabRound, headcrabChance, waveIntensity } from './game/waves.js';
 import { weightedPick } from './weapons/ammo.js';
 import {
@@ -288,6 +288,9 @@ let arenaHalf = 45;
 const barriers = []; // { mesh, collider, cost, zone, open, hp, collapsed }
 const zones = []; // { id, rect: [minX, minZ, maxX, maxZ], unlocked }
 
+// Open window waypoints (Nacht): horde pathfinding only, no repair.
+const windows = [];
+
 // ── Wall guns (point-buy mounts) + the Pack-a-Punch station ──
 const wallGuns = []; // { mesh, weapon, cost, used }
 let papMachine = null; // { mesh, used }
@@ -517,6 +520,7 @@ function spawnWave() {
       obstacles: controller.obstacles,
       sandbags,
       barriers,
+      windows,
       getPeers: () => enemies,
     });
     enemies.push(enemy);
@@ -532,6 +536,7 @@ function spawnWave() {
         obstacles: controller.obstacles,
         sandbags,
         barriers,
+        windows,
         getPeers: () => enemies,
       });
       enemies.push(enemy);
@@ -938,6 +943,9 @@ function buildGame() {
     zones.unshift({ id: 'main', rect: [-arenaHalf, -arenaHalf, arenaHalf, arenaHalf], unlocked: true });
   }
 
+  windows.length = 0;
+  for (const w of built.windows || []) windows.push(w);
+
   difficulty = difficultyByKey(setup.difficulty);
   wallGuns.length = 0;
   papMachine = null;
@@ -1315,6 +1323,7 @@ function teardownGame() {
   for (const b of barriers) if (!b.collapsed) scene.remove(b.mesh);
   barriers.length = 0;
   zones.length = 0;
+  windows.length = 0;
   wallGuns.length = 0;
   papMachine = null;
 
