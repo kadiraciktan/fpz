@@ -573,6 +573,7 @@ function spawnWave() {
       damage: dmg,
       obstacles: controller.obstacles,
       sandbags,
+      getPeers: () => enemies,
     });
     enemies.push(enemy);
   }
