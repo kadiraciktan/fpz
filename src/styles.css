@@ -104,6 +104,14 @@
       letter-spacing: 1px;
       text-transform: uppercase;
     }
+    /* CoD-style round badge — the number rides on a fixed "TUR" prefix */
+    #round::before {
+      content: 'TUR ';
+      font-size: 10px;
+      letter-spacing: 2px;
+      color: #a8a088;
+      margin-right: 4px;
+    }
     #score {
       position: absolute;
       top: 18px;
@@ -124,14 +132,69 @@
       letter-spacing: 2px;
       color: #f0ead8;
       text-shadow: 0 2px 4px rgba(0,0,0,0.95);
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
     }
-    #health {
+    /* CoD-style ammo: the live mag dominates, reserve + special badge trail it */
+    #ammoMag { font-size: 40px; color: #f5efdd; }
+    #ammoRes { font-size: 20px; color: #a8a088; letter-spacing: 1px; }
+    #ammoSpecial { font-size: 20px; }
+    #ammo.reloading #ammoMag { font-size: 18px; letter-spacing: 3px; color: #ffb300; }
+    /* Health bar (CoD style): above the round badge, drains right to left */
+    #healthBar {
       position: absolute;
-      bottom: 64px;
-      right: 18px;
-      font-size: 14px;
+      bottom: 60px;
+      left: 18px;
+      width: 168px;
+      height: 14px;
+      background: rgba(20, 24, 18, 0.78);
+      border: 1px solid rgba(180, 170, 140, 0.45);
+      overflow: hidden;
+    }
+    #healthFill {
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 100%;
+      background: linear-gradient(180deg, #9ccc65, #689f38);
+      transition: width 0.2s ease, background 0.3s ease;
+    }
+    #healthBar.low #healthFill { background: linear-gradient(180deg, #ef5350, #b71c1c); }
+    #healthText {
+      position: absolute;
+      right: 4px; top: -1px;
+      font-size: 11px;
+      font-weight: bold;
       letter-spacing: 1px;
-      color: #c8c0a8;
+      color: #f0ead8;
+      text-shadow: 0 1px 2px rgba(0,0,0,0.95);
+    }
+    /* Score popups: +points drifting up from the crosshair (CoD hit feedback) */
+    #popups {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 0;
+      height: 0;
+      pointer-events: none;
+    }
+    .scorePop {
+      position: absolute;
+      opacity: 0;
+      font-weight: bold;
+      letter-spacing: 1px;
+      text-shadow: 0 1px 3px rgba(0,0,0,0.95);
+      white-space: nowrap;
+    }
+    .scorePop.show { animation: popRise 0.85s ease-out forwards; }
+    .scorePop.hit { font-size: 15px; color: #f0ead8; }
+    .scorePop.hs { font-size: 17px; color: #ffb74d; }
+    .scorePop.kill { font-size: 19px; color: #ffd54f; }
+    .scorePop.killhs { font-size: 22px; color: #ff7043; }
+    @keyframes popRise {
+      0% { opacity: 0; transform: translate(-50%, 6px) scale(0.7); }
+      18% { opacity: 1; transform: translate(-50%, -2px) scale(1.12); }
+      100% { opacity: 0; transform: translate(-50%, -52px) scale(1); }
     }
     #weaponName {
       position: absolute;
@@ -156,6 +219,63 @@
       letter-spacing: 1px;
       color: #cfe8a0;
     }
+    /* Special ability rack (bottom-right, stacked above the ammo readout):
+       one card per ability, the selected one glows amber. X cycles, F fires. */
+    #abilities {
+      position: absolute;
+      bottom: 118px;
+      right: 18px;
+      display: flex;
+      flex-direction: row-reverse;
+      align-items: flex-end;
+      gap: 6px;
+      pointer-events: none;
+    }
+    .abCard {
+      min-width: 52px;
+      padding: 5px 8px 4px;
+      background: rgba(20, 24, 18, 0.78);
+      border: 1px solid rgba(180, 170, 140, 0.35);
+      border-radius: 6px;
+      text-align: center;
+      color: #cfc9b5;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+      transition: transform 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+    }
+    .abCard .abIcon { display: block; font-size: 18px; line-height: 1.1; }
+    .abCard .abCount {
+      display: block;
+      font-size: 14px;
+      font-weight: bold;
+      letter-spacing: 1px;
+      color: #f0ead8;
+      text-shadow: 0 1px 2px rgba(0,0,0,0.9);
+    }
+    .abCard .abLabel {
+      display: block;
+      font-size: 8px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: #a8a088;
+      white-space: nowrap;
+    }
+    .abCard.empty { opacity: 0.45; }
+    .abCard.empty .abCount { color: #ef5350; }
+    .abCard.sel {
+      border-color: rgba(255, 213, 79, 0.9);
+      transform: translateY(-4px) scale(1.06);
+      box-shadow: 0 0 10px rgba(255, 193, 7, 0.35), 0 3px 8px rgba(0,0,0,0.6);
+    }
+    .abCard.sel .abLabel { color: #ffd54f; }
+    /* Key hint line under the rack */
+    #abilities .abHint {
+      align-self: center;
+      font-size: 9px;
+      letter-spacing: 1px;
+      color: #8d8672;
+      text-transform: uppercase;
+      text-shadow: 0 1px 2px rgba(0,0,0,0.9);
+    }
     /* Next-wave countdown (prep phase) */
     #prep {
       position: absolute;
@@ -173,7 +293,7 @@
     /* Owned perks strip (bottom-left, under the round badge) */
     #perks {
       position: absolute;
-      bottom: 58px;
+      bottom: 84px;
       left: 18px;
       font-size: 13px;
       letter-spacing: 1px;

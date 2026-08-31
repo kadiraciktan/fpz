@@ -26,6 +26,7 @@ import { createMainMenu } from './ui/mainMenu.js';
 import { createMenuStats } from './ui/menuStats.js';
 import { createPauseOptions } from './ui/pauseOptions.js';
 import { createHud } from './ui/hud.js';
+import { createScorePopups } from './ui/scorePopups.js';
 import { createPerfHud } from './ui/perfHud.js';
 import { setup, saveSetup } from './game/setup.js';
 import { totalXp, stats, loadProgress, saveProgress, addXp, recordBestRun } from './game/progress.js';
@@ -36,6 +37,10 @@ import { collectShadowCasters, updateShadowCulling, createLightPool } from './ga
 import { createDayNight, driveWeather } from './game/sky.js';
 import { Spawner } from './game/spawns.js';
 import { createInteractions } from './game/interactions.js';
+import {
+  DRONE_STOCK, DRONE_MAX_CARRIED, DRONE_BLAST_RADIUS, DRONE_BLAST_DAMAGE,
+  launchDrone, updateDrones,
+} from './game/drones.js';
 
 /**
  * main.js
@@ -80,6 +85,7 @@ const menuNav = new GamepadMenuNav(gamepad);
 
 // --- HUD (pure view; main passes state snapshots in — see ui/hud.js) ---
 const hud = createHud();
+const scorePopups = createScorePopups();
 
 // ════════════════════════════ MAIN MENU ════════════════════════════
 
@@ -169,6 +175,19 @@ let prepTimer = 0;
 // ── Player buildables: sandbag walls (B) + noisemakers (G, on WeaponManager) ──
 let sandbagStock = 0;
 const sandbags = []; // scene groups with userData.hp — zombies chew through them
+
+// ── Special abilities: X cycles the selection, F fires it. Drones are the
+// hand-launched kamikaze quadrotors (game/drones.js); carpet and cephane
+// ride the existing power-up effects with their own prep-restocked stock. ──
+const ABILITIES = [
+  { id: 'drone', icon: '🛸', label: 'KAMİKAZE DRONE', short: 'Drone' },
+  { id: 'carpet', icon: '✈️', label: 'HALI BOMBARDIMANI', short: 'Hali' },
+  { id: 'maxammo', icon: '📦', label: 'CEPHANE İKMALİ', short: 'Ikmal' },
+];
+const ABILITY_CAP = { drone: DRONE_MAX_CARRIED, carpet: 2, maxammo: 2 };
+let abilityIndex = 0;
+const abilityStock = { drone: 0, carpet: 0, maxammo: 0 };
+const drones = []; // live quadrotors — see game/drones.js
 
 // ── Perk machines (CoD zombies style): one of each per map, bought with points ──
 const machines = []; // { mesh, perk, used }
@@ -283,10 +302,16 @@ function isBlocked(x, z) {
 }
 
 // ── HUD refresh helpers (the actual DOM work lives in ui/hud.js) ──
+// Ability snapshot for the bottom-right rack (cards are cached in hud.js).
+const abilityView = ABILITIES.map((a) => ({ ...a, stock: 0 }));
+
 function updateHUD() {
+  for (const v of abilityView) v.stock = abilityStock[v.id];
+  hud.setAbilities(abilityView, abilityIndex);
   hud.update({
     score,
     health: playerHealth,
+    maxHealth,
     round,
     gear: weaponManager
       ? `💣 ${weaponManager.noisemakers}  🧱 ${sandbagStock}  🧨 ${weaponManager.grenadesReady}  [G/B/H]`
@@ -419,11 +444,14 @@ function startPrep(seconds) {
   waveState = 'prep';
   prepTimer = seconds;
   sandbagStock = 4;
+  abilityStock.drone = Math.min(ABILITY_CAP.drone, abilityStock.drone + DRONE_STOCK);
+  abilityStock.carpet = Math.min(ABILITY_CAP.carpet, abilityStock.carpet + 1);
+  abilityStock.maxammo = Math.min(ABILITY_CAP.maxammo, abilityStock.maxammo + 1);
   if (weaponManager) {
     weaponManager.noisemakers = 2;
     weaponManager.grenadesReady = Math.max(weaponManager.grenadesReady, 1);
   }
-  showToast(`Hazırlık: ${seconds} sn — B kum torbası · G ses bombası · H el bombası`);
+  showToast(`Hazırlık: ${seconds} sn — B kum torbası · G ses bombası · H el bombası · X özellik seç · F kullan`);
   updateHUD();
 }
 
@@ -456,6 +484,52 @@ function placeSandbag() {
   updateHUD();
 }
 
+/** X: cycle the selected special ability (F fires it). */
+function cycleAbility() {
+  if (!scene || !document.pointerLockElement) return;
+  abilityIndex = (abilityIndex + 1) % ABILITIES.length;
+  const a = ABILITIES[abilityIndex];
+  weaponManager.sfx.reloadStart(); // soft UI blip
+  showToast(`➡️ ÖZEL: ${a.icon} ${a.label} (${abilityStock[a.id]}) — F ile kullan`);
+  updateHUD();
+}
+
+/** F: fire the selected ability — drone launch, carpet strike or resupply. */
+function useAbility() {
+  if (!scene || !document.pointerLockElement) return;
+  const a = ABILITIES[abilityIndex];
+  if (abilityStock[a.id] <= 0) {
+    weaponManager.sfx.reloadStart(); // dry tin: empty pouch
+    showToast(`${a.icon} ${a.label} kalmadı! Dalga arası ikmal gelir.`);
+    return;
+  }
+  abilityStock[a.id]--;
+  if (a.id === 'drone') {
+    drones.push(launchDrone(scene, camera, controller));
+    weaponManager.sfx.meleeWhoosh(); // launch whistle
+    gamepad.rumble(0.35, 0.5, 110);
+    showToast('🛸 DRONE HAVADA — hedefe kilitlendi!');
+  } else if (a.id === 'carpet') {
+    startCarpetBombing();
+  } else {
+    weaponManager.fillAllAmmo();
+    weaponManager.sfx.powerUp();
+    gamepad.rumble(0.4, 0.6, 130);
+    showToast('📦 CEPHANE İKMALİ! Tüm şarjörler doldu');
+  }
+  updateHUD();
+}
+
+/** Drone warhead: same blast sweep as every other explosion, +self damage. */
+function detonateDrone(pos, hitTarget) {
+  spawnExplosion(pos, true, 0x66ccff);
+  gamepad.rumble(0.8, 0.7, 220);
+  const kills = blastEnemies(pos, DRONE_BLAST_RADIUS, DRONE_BLAST_DAMAGE);
+  showToast(kills
+    ? `🛸 ${kills} zombi infilak etti!`
+    : hitTarget ? '🛸 Drone hedefe çarptı!' : '🛸 Drone kendini imha etti');
+}
+
 // ── E / gamepad-Y interaction chain (perk → PaP → barrier → wall gun →
 // thompson → mystery box — see game/interactions.js). Score flows through
 // spend() so the HUD readout always matches the balance. ──
@@ -485,8 +559,10 @@ function startCarpetBombing() {
 
 function addScore(base) {
   const mult = (performance.now() < doublePointsUntil ? 2 : 1) * difficulty.scoreMul;
-  score += Math.round(base * mult);
+  const pts = Math.round(base * mult);
+  score += pts;
   updateHUD();
+  return pts;
 }
 
 // ── Power-ups (drop on kill ~25%, pick up by proximity; table in
@@ -546,7 +622,8 @@ function applyPowerUp(key) {
 // applied, shared by gunfire, fire, chains, splashes, grenades and nukes ──
 function killCredit(enemy, isHeadshot = false) {
   gamepad.rumble(0.25, 0.45, 70);
-  addScore(Math.round(enemy.params.score * (isHeadshot ? 1.5 : 1)));
+  const pts = addScore(Math.round(enemy.params.score * (isHeadshot ? 1.5 : 1)));
+  scorePopups.spawn(`+${pts}`, isHeadshot ? 'killhs' : 'kill');
   addXp(isHeadshot ? 15 : 10);
   stats.kills++;
   if (isHeadshot) stats.headshots++;
@@ -705,7 +782,8 @@ function buildGame() {
 
   weaponManager = new WeaponManager(scene, camera, controller, {
     onEnemyHit: (enemy, isHeadshot) => {
-      addScore(10);
+      const pts = addScore(10);
+      scorePopups.spawn(`+${pts}`, isHeadshot ? 'hs' : 'hit');
       weaponManager.sfx.enemyHit();
     },
     onEnemyKilled: (enemy, isHeadshot) => {
@@ -829,6 +907,14 @@ function buildGame() {
       placeSandbag();
       return;
     }
+    if (e.code === 'KeyX') {
+      cycleAbility();
+      return;
+    }
+    if (e.code === 'KeyF') {
+      useAbility();
+      return;
+    }
     if (e.code !== 'KeyE') return;
     interactPrimary();
   };
@@ -851,6 +937,9 @@ function buildGame() {
   downed.t = 0;
   hud.setDownBar(false);
   carpet = null;
+  Object.assign(abilityStock, { drone: DRONE_STOCK, carpet: 1, maxammo: 1 });
+  abilityIndex = 0;
+  drones.length = 0;
 
   // Day/night cycle: remember the scene's base light intensities.
   dayNight.configure({
@@ -953,6 +1042,9 @@ function teardownGame() {
   downed.t = 0;
   hud.setDownBar(false);
   carpet = null;
+  for (const d of drones) scene.remove(d.mesh);
+  drones.length = 0;
+  Object.assign(abilityStock, { drone: 0, carpet: 0, maxammo: 0 });
   weather.enabled = false;
   weather.rain = null;
   weather.state = 'clear';
@@ -984,6 +1076,7 @@ function teardownGame() {
   const crossEl = document.getElementById('crosshair');
   if (crossEl) crossEl.style.display = '';
   hud.clearRun();
+  scorePopups.clear();
   overlay.classList.add('hidden');
   if (document.pointerLockElement) document.exitPointerLock();
 }
@@ -1114,6 +1207,12 @@ function animate() {
     onInteract: () => {
       if (document.pointerLockElement === canvas) interactPrimary();
     },
+    onAbility: () => {
+      if (document.pointerLockElement === canvas) useAbility();
+    },
+    onCycle: () => {
+      if (document.pointerLockElement === canvas) cycleAbility();
+    },
     onPause: () => {
       if (document.pointerLockElement === canvas) document.exitPointerLock();
       else if (scene && pendingRestart) restartRun();
@@ -1188,6 +1287,17 @@ function animate() {
       if (carpet.kills) showToast(`✈️ ${carpet.kills} zombi havan ateşiyle temizlendi`);
       carpet = null;
     }
+  }
+
+  // ── Kamikaze drones: hunt the nearest zombie, detonate on contact ──
+  if (drones.length) {
+    updateDrones(drones, dt, {
+      scene,
+      enemies,
+      camera,
+      arenaHalf,
+      onDetonate: (pos, hitTarget) => detonateDrone(pos, hitTarget),
+    });
   }
 
   // ── Bleed-out clock (downed): ticks down, kills push it back up ──
@@ -1407,6 +1517,8 @@ window.__fpz = {
       difficulty: difficulty.key,
       downed: downed.active ? Math.round(downed.t * 10) / 10 : 0,
       weather: weather.state,
+      drones: { stock: abilityStock.drone, live: drones.length },
+      ability: ABILITIES[abilityIndex].id,
       dayPhase: Math.round(dn.phase * 1000) / 1000,
       special: weaponManager ? weaponManager.special : null,
       player: controller ? { x: controller.position.x, z: controller.position.z } : null,

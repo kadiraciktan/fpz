@@ -195,6 +195,9 @@ export class WeaponManager {
     this._decals = [];
 
     this._ammoEl = document.getElementById('ammo');
+    this._ammoMagEl = document.getElementById('ammoMag');
+    this._ammoResEl = document.getElementById('ammoRes');
+    this._ammoSpecialEl = document.getElementById('ammoSpecial');
     this._weaponEl = document.getElementById('weaponName');
 
     this._bindInput();
@@ -1194,10 +1197,12 @@ export class WeaponManager {
   _updateHUD() {
     const w = this.active;
     if (this._ammoEl) {
-      const badge = specialActive(this.special) ? ` ${specialIcon(this.special)}` : '';
-      this._ammoEl.textContent = w.reloading
-        ? `RELOADING...${badge}`
-        : `${w.ammo} ▸ ${w.reserve}${badge}`;
+      const badge = specialActive(this.special) ? specialIcon(this.special) : '';
+      // CoD-style split readout: big live mag, faded reserve, special badge.
+      if (this._ammoMagEl) this._ammoMagEl.textContent = w.reloading ? 'RELOAD' : String(w.ammo);
+      if (this._ammoResEl) this._ammoResEl.textContent = w.reloading ? '' : `▸ ${w.reserve}`;
+      if (this._ammoSpecialEl) this._ammoSpecialEl.textContent = badge;
+      this._ammoEl.classList.toggle('reloading', !!w.reloading);
     }
     if (this._weaponEl) {
       this._weaponEl.textContent = w.def.label || w.def.name;

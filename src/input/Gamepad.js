@@ -9,7 +9,8 @@
  *   A            jump            B            crouch (hold)
  *   X            reload          Y            interact (E)
  *   LB / RB      previous/next weapon
- *   L3           sprint (hold)   Start        pause / resume
+ *   L3           sprint (hold)   R3           fire selected ability (F)
+ *   D-pad right  cycle special ability (X)    Start   pause / resume
  */
 
 /** Read a trigger as 0..1 — handles both analog values and digital-only pads. */
@@ -88,10 +89,10 @@ export class GamepadInput {
 
   /**
    * @param {number} dt
-   * @param {{controller?: object, weaponManager?: object, onInteract?: Function, onPause?: Function}} deps
+   * @param {{controller?: object, weaponManager?: object, onInteract?: Function, onPause?: Function, onAbility?: Function, onCycle?: Function}} deps
    * @returns {boolean} true if a gamepad was read this frame
    */
-  update(dt, { controller, weaponManager, onInteract, onPause } = {}) {
+  update(dt, { controller, weaponManager, onInteract, onPause, onAbility, onCycle } = {}) {
     const gp = this.pickPad();
     this.lastPad = gp;
     if (!gp) {
@@ -134,6 +135,8 @@ export class GamepadInput {
     }
 
     if (this._pressed(gp, 3) && onInteract) onInteract();
+    if (this._pressed(gp, 11) && onAbility) onAbility();
+    if (this._pressed(gp, 15) && onCycle) onCycle();
     if (this._pressed(gp, 9) && onPause) onPause();
     return true;
   }

@@ -10,7 +10,9 @@ import { PERKS } from '../game/perks.js';
 
 export function createHud() {
   const hudScore = document.getElementById('score');
-  const hudHealth = document.getElementById('health');
+  const healthBarEl = document.getElementById('healthBar');
+  const healthFillEl = document.getElementById('healthFill');
+  const healthTextEl = document.getElementById('healthText');
   const hudRound = document.getElementById('round');
   const hudGear = document.getElementById('gear');
   const hudPrep = document.getElementById('prep');
@@ -20,10 +22,58 @@ export function createHud() {
   const compassCtx = compassEl ? compassEl.getContext('2d') : null;
   const downBarWrap = document.getElementById('downWrap');
   const downBarFill = document.getElementById('downBar');
+  const abilitiesEl = document.getElementById('abilities');
 
-  function update({ score, health, round, gear, perksHeld }) {
+  // ── Special ability rack (bottom-right, above the ammo): one card per
+  // ability; the selected one is highlighted. Cards are built once and
+  // then only their counts / classes get refreshed. ──
+  const abCards = [];
+  function setAbilities(list, selIndex) {
+    if (!abilitiesEl) return;
+    abilitiesEl.classList.remove('hidden');
+    if (abCards.length !== list.length) {
+      abilitiesEl.textContent = '';
+      abCards.length = 0;
+      for (const a of list) {
+        const card = document.createElement('div');
+        card.className = 'abCard';
+        const icon = document.createElement('span');
+        icon.className = 'abIcon';
+        icon.textContent = a.icon;
+        const count = document.createElement('span');
+        count.className = 'abCount';
+        const label = document.createElement('span');
+        label.className = 'abLabel';
+        label.textContent = a.short || a.label;
+        card.append(icon, count, label);
+        abilitiesEl.appendChild(card);
+        abCards.push({ card, count, icon: a.icon });
+      }
+      const hint = document.createElement('span');
+      hint.className = 'abHint';
+      hint.textContent = 'X seç · F kullan';
+      abilitiesEl.appendChild(hint);
+    }
+    for (let i = 0; i < abCards.length; i++) {
+      const { card, count, icon } = abCards[i];
+      const n = list[i].stock;
+      const txt = String(n);
+      if (count.textContent !== txt) count.textContent = txt;
+      card.classList.toggle('sel', i === selIndex);
+      card.classList.toggle('empty', n <= 0);
+      card.title = `${icon} ${list[i].label}`;
+    }
+  }
+
+  function update({ score, health, maxHealth = 100, round, gear, perksHeld }) {
     if (hudScore) hudScore.textContent = String(score);
-    if (hudHealth) hudHealth.textContent = String(Math.max(0, health));
+    if (healthFillEl && healthTextEl && healthBarEl) {
+      const hp = Math.max(0, health);
+      const frac = Math.max(0, Math.min(1, hp / Math.max(1, maxHealth)));
+      healthFillEl.style.width = `${Math.round(frac * 100)}%`;
+      healthTextEl.textContent = String(hp);
+      healthBarEl.classList.toggle('low', frac <= 0.3);
+    }
     if (hudRound) hudRound.textContent = String(round);
     if (hudGear && gear !== undefined) hudGear.textContent = gear;
     if (hudPerks) {
@@ -65,6 +115,7 @@ export function createHud() {
   function clearRun() {
     setPrep('');
     if (hudBuffs) hudBuffs.textContent = '';
+    if (abilitiesEl) abilitiesEl.classList.add('hidden');
     if (compassCtx) compassCtx.clearRect(0, 0, compassEl.width, compassEl.height);
   }
 
@@ -139,6 +190,6 @@ export function createHud() {
 
   return {
     update, updateBuffs, setPrep, setDownBar, setDownFrac, clearRun,
-    beginPois, pushPoi, drawCompass,
+    beginPois, pushPoi, drawCompass, setAbilities,
   };
 }
