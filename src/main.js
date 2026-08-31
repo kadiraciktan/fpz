@@ -201,6 +201,11 @@ let gunship = null;
 let gunshipCamKids = null; // stowed viewmodel while the camera is airborne
 let gunKills = 0;
 let mapOutdoor = true;
+// Landing grace: the horde piles onto the parked body while the gunner is
+// away — without a few seconds of cover the touchdown frame eats the whole
+// horde's bite at once.
+const GUNSHIP_GRACE = 2.5; // seconds of damage immunity after landing
+let gunshipGraceUntil = 0;
 
 // ── Perk machines (CoD zombies style): one of each per map, bought with points ──
 const machines = []; // { mesh, perk, used }
@@ -596,9 +601,10 @@ function endGunship() {
   camera.fov = opts.fov;
   camera.updateProjectionMatrix();
   hud.setGunship(null);
+  gunshipGraceUntil = performance.now() + GUNSHIP_GRACE * 1000;
   weaponManager.sfx.powerUp();
   gamepad.rumble(0.5, 0.7, 200);
-  showToast(`🛩️ GUNSHIP PAKETİ BİTTİ — ${kills} zombi temizlendi`);
+  showToast(`🛩️ GUNSHIP PAKETİ BİTTİ — ${kills} zombi temizlendi · ${GUNSHIP_GRACE} sn tahliye!`);
   updateHUD();
 }
 
@@ -1013,6 +1019,7 @@ function buildGame() {
   gunship = null;
   gunshipCamKids = null;
   gunKills = 0;
+  gunshipGraceUntil = 0;
   Object.assign(abilityStock, {
     drone: DRONE_STOCK, carpet: 1, maxammo: 1, gunship: mapOutdoor ? 1 : 0,
   });
@@ -1534,9 +1541,10 @@ function animate() {
         weaponManager.setTargets(enemies.filter((e) => e.alive && !e.dying).map((e) => e.group));
       }
     }
-    if (dmg > 0 && !gunship) {
+    if (dmg > 0 && !gunship && now >= gunshipGraceUntil) {
       // Hit feedback: camera flinch + red vignette flash
-      // (the gunner is out of reach — bites on the parked body are ignored)
+      // (the gunner is out of reach — bites on the parked body are ignored,
+      // and a short grace window covers the touchdown swarm)
       controller.addHitFlinch();
       const dmgEl = document.getElementById('damage');
       if (dmgEl) {
