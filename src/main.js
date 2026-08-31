@@ -1,32 +1,48 @@
 import * as THREE from 'three';
 import { createScene, flickerLights, MAPS } from './gfx/Scene.js';
 import { FPSController } from './input/FPSController.js';
-import { WeaponManager, createLegsMesh, ATTACHMENTS, WEAPON_DEFS, WEAPON_LABELS, DEFAULT_LOADOUT, MYSTERY_POOL } from './weapons/Weapons.js';
+import { WeaponManager, createLegsMesh, WEAPON_DEFS } from './weapons/Weapons.js';
 import { createGunsmithScreen } from './ui/gunsmith.js';
 import { Enemy } from './game/Enemy.js';
-import { createSandbag, createPerkMachine, markMachineSold, createWallGun, createPapMachine, retintLabelSign } from './gfx/Prefabs.js';
+import { createSandbag } from './gfx/Prefabs.js';
 import { GamepadInput, GamepadMenuNav } from './input/Gamepad.js';
 import { waveCount, waveParams, pickEnemyType, isBossRound, bossCount, isSprintRound, isHeadcrabRound, headcrabChance, waveIntensity } from './game/waves.js';
-import { weightedPick } from './weapons/ammo.js';
 import {
-  DIFFICULTIES, difficultyByKey, applyDifficulty,
-  PAP_COST, papLabel,
-  machineSpots, wallGunSpots, wallGunNames, wallGunCost,
-  BARRIER_HP, BARRIER_REPAIR_COST, barrierNeedsRepair,
+  difficultyByKey, applyDifficulty,
+  BARRIER_HP, barrierNeedsRepair,
   DOWNED_DURATION, DOWNED_REVIVE_HP, DOWNED_BITE_BLEED, extendDowned, downedBar,
   CARPET_BOMBS, CARPET_DURATION, CARPET_MIN_R, CARPET_MAX_R, CARPET_BLAST_RADIUS, CARPET_BLAST_DAMAGE,
 } from './game/zombies.js';
 import { SPECIAL_AMMO, pickChainTargets } from './game/ammoTypes.js';
-import { createRain, rollWeather, weatherIntensity, lightningDelay, rainDrops } from './game/weather.js';
+import { createRain, rollWeather, rainDrops } from './game/weather.js';
 import { BloodDecals } from './gfx/BloodDecals.js';
 import { QUALITY_PRESETS, qualityByKey } from './game/perf.js';
 import { isBlockedAt } from './game/collision.js';
 import { restartCssAnim } from './ui/util.js';
+import { disposeSceneAssets } from './gfx/dispose.js';
+import { showToast } from './ui/toast.js';
+import { createTransition } from './ui/transition.js';
+import { createMainMenu } from './ui/mainMenu.js';
+import { createMenuStats } from './ui/menuStats.js';
+import { createPauseOptions } from './ui/pauseOptions.js';
+import { createHud } from './ui/hud.js';
+import { createPerfHud } from './ui/perfHud.js';
+import { setup, saveSetup } from './game/setup.js';
+import { totalXp, stats, loadProgress, saveProgress, addXp, recordBestRun } from './game/progress.js';
+import { PERKS } from './game/perks.js';
+import { powerUpType, spawnPowerUp } from './game/powerups.js';
+import { createFx } from './game/fx.js';
+import { collectShadowCasters, updateShadowCulling, createLightPool } from './game/perfCull.js';
+import { createDayNight, driveWeather } from './game/sky.js';
+import { Spawner } from './game/spawns.js';
+import { createInteractions } from './game/interactions.js';
 
 /**
  * main.js
- * Entry point: main menu (map + attachment selection), then the game —
- * renderer, camera, scene, player, weapons, enemy waves and the HUD.
+ * Entry point / orchestrator: renderer, run lifecycle (build / teardown),
+ * wave rhythm and the game loop. Menus, HUD, persistence, FX, spawn
+ * placement and the E-interaction chain live in focused modules under
+ * src/ui and src/game.
  */
 
 // --- Renderer ---
@@ -56,152 +72,35 @@ camera.layers.enable(1);
 // --- Persistent DOM refs ---
 const overlay = document.getElementById('overlay');
 const startBtn = document.getElementById('startBtn');
-const hudScore = document.getElementById('score');
-const hudHealth = document.getElementById('health');
-const hudRound = document.getElementById('round');
-const toastsEl = document.getElementById('toasts');
-const hudGear = document.getElementById('gear');
-const hudPrep = document.getElementById('prep');
-const hudPerks = document.getElementById('perks');
-const hudBuffs = document.getElementById('buffs');
-const compassEl = document.getElementById('compass');
-const compassCtx = compassEl ? compassEl.getContext('2d') : null;
+const menuEl = document.getElementById('mainMenu');
+
+// --- Input ---
+const gamepad = new GamepadInput();
+const menuNav = new GamepadMenuNav(gamepad);
+
+// --- HUD (pure view; main passes state snapshots in — see ui/hud.js) ---
+const hud = createHud();
 
 // ════════════════════════════ MAIN MENU ════════════════════════════
 
-const menuEl = document.getElementById('mainMenu');
-const mapCardsEl = document.getElementById('mapCards');
-const diffRowEl = document.getElementById('diffRow');
-
-const setup = {
-  mapId: 'street',
-  difficulty: 'normal',
-  attachments: {},
-  skins: {},
-};
-
-// Attachment + skin state per weapon (all slots off / default skin),
-// plus the 4-slot loadout (CoD-style: choose a weapon per slot).
-for (const d of WEAPON_DEFS) {
-  setup.attachments[d.name] = {};
-  for (const key of Object.keys(ATTACHMENTS)) setup.attachments[d.name][key] = false;
-  setup.skins[d.name] = 'default';
-}
-setup.loadout = [...DEFAULT_LOADOUT];
-
-// Restore the last deployment (map / difficulty / loadout / attachments).
-const SETUP_KEY = 'zombieFront.setup';
-try {
-  const saved = JSON.parse(localStorage.getItem(SETUP_KEY) || 'null');
-  if (saved) {
-    if (MAPS.some((m) => m.id === saved.mapId)) setup.mapId = saved.mapId;
-    if (DIFFICULTIES.some((d) => d.key === saved.difficulty)) setup.difficulty = saved.difficulty;
-    for (const [w, v] of Object.entries(saved.attachments || {})) {
-      if (setup.attachments[w]) Object.assign(setup.attachments[w], v);
-    }
-    for (const [w, v] of Object.entries(saved.skins || {})) {
-      if (setup.skins[w]) setup.skins[w] = v;
-    }
-    if (Array.isArray(saved.loadout) && saved.loadout.length === 4) setup.loadout = saved.loadout;
-  }
-} catch { /* corrupt setup blob: defaults */ }
-
-function saveSetup() {
-  try { localStorage.setItem(SETUP_KEY, JSON.stringify(setup)); } catch { /* ignore */ }
-}
-
-// Map cards (with the per-map lifetime record line)
-for (const map of MAPS) {
-  const card = document.createElement('div');
-  card.className = 'mapCard' + (map.id === setup.mapId ? ' selected' : '');
-  card.dataset.mapId = map.id;
-  card.innerHTML = `
-    <div class="swatch" style="background:${map.swatch}"></div>
-    <div class="mapName">${map.name}</div>
-    <div class="mapDesc">${map.desc}</div>
-    <div class="mapRecord" id="rec-${map.id}"></div>`;
-  card.addEventListener('click', () => {
-    setup.mapId = map.id;
-    mapCardsEl.querySelectorAll('.mapCard').forEach((c) => c.classList.remove('selected'));
-    card.classList.add('selected');
-    saveSetup();
-  });
-  mapCardsEl.appendChild(card);
-}
-
-// Difficulty selector cards
-function buildDiffCards() {
-  if (!diffRowEl) return;
-  diffRowEl.innerHTML = '';
-  for (const d of DIFFICULTIES) {
-    const card = document.createElement('div');
-    card.className = 'diffCard' + (d.key === setup.difficulty ? ' selected' : '');
-    card.innerHTML = `<b style="color:${d.color}">${d.icon} ${d.label}</b><span>${d.desc}</span>`;
-    card.addEventListener('click', () => {
-      setup.difficulty = d.key;
-      diffRowEl.querySelectorAll('.diffCard').forEach((c) => c.classList.remove('selected'));
-      card.classList.add('selected');
-      saveSetup();
-    });
-    diffRowEl.appendChild(card);
-  }
-}
-buildDiffCards();
-
-// ── Gunsmith screen (extracted to src/ui/gunsmith.js; wires its own buttons) ──
+loadProgress(); // XP / lifetime stats (live bindings in game/progress.js)
+createMainMenu(); // map + difficulty cards (selection state in game/setup.js)
 createGunsmithScreen(setup, () => totalXp);
+const menuStats = createMenuStats();
 
 // ── Deployment transition: menu → game cinematic handoff ──
-const transitionEl = document.getElementById('transition');
-const trStatusEl = document.getElementById('trStatus');
-const trBarEl = document.getElementById('trBarFill');
-const trHintEl = document.getElementById('trHint');
-let trTimers = [];
-
-const trLater = (fn, ms) => trTimers.push(setTimeout(fn, ms));
-const trClear = () => { for (const t of trTimers) clearTimeout(t); trTimers = []; };
-
-function showTransition(mapName) {
-  trClear();
-  transitionEl.classList.remove('hidden', 'out');
-  trHintEl.textContent = '';
-  trBarEl.classList.remove('run');
-  void trBarEl.offsetWidth; // restart the fill animation
-  trBarEl.classList.add('run');
-  const steps = [
-    `HARİTA YÜKLENİYOR: ${mapName}`,
-    'CEPHANE DAĞITILIYOR...',
-    'SİPERLER KURULUYOR...',
-    'ZOMBİLER GELİYOR...',
-  ];
-  steps.forEach((s, i) => trLater(() => { trStatusEl.textContent = s; }, i * 280));
-}
-
-function endTransition() {
-  if (transitionEl.classList.contains('hidden')) return;
-  transitionEl.classList.add('out');
-  trLater(() => {
-    transitionEl.classList.add('hidden');
-    transitionEl.classList.remove('out');
-  }, 650);
-}
-
-// Fallback: if the browser didn't auto-lock the mouse, clicking the
-// transition screen requests the lock (keeps the cinematic flow).
-transitionEl.addEventListener('click', () => {
-  if (!transitionEl.classList.contains('hidden')) requestLock();
-});
+const transition = createTransition(() => requestLock());
 
 document.getElementById('startGameBtn').addEventListener('click', () => {
   saveSetup();
   const map = MAPS.find((m) => m.id === setup.mapId);
-  showTransition(map ? map.name : setup.mapId);
+  transition.show(map ? map.name : setup.mapId);
   menuEl.classList.add('hidden');
-  trLater(() => { teardownGame(); buildGame(); }, 80);
-  trLater(() => requestLock(), 1100);
-  trLater(() => {
-    if (document.pointerLockElement !== canvas && !transitionEl.classList.contains('hidden')) {
-      trHintEl.textContent = '▶ Başlamak için ekrana tıkla';
+  transition.later(() => { teardownGame(); buildGame(); }, 80);
+  transition.later(() => requestLock(), 1100);
+  transition.later(() => {
+    if (document.pointerLockElement !== canvas && !transition.isHidden()) {
+      transition.setHint('▶ Başlamak için ekrana tıkla');
     }
   }, 2000);
 });
@@ -211,114 +110,13 @@ document.getElementById('startGameBtn').addEventListener('click', () => {
 let scene = null;
 let controller = null;
 let weaponManager = null;
+let spawner = null;
 
 let enemies = [];
 let round = 1;
-
-// Distance-based shadow culling: distant props skip the shadow pass.
-// Refreshed on a slow cadence (0.2s), not per frame. Merged static props
-// always cast (one draw call for the whole map), so they are excluded.
-const perfCull = { shadowCasters: [], acc: 0 };
-
-/**
- * Point-light pool: the map's point lights live as data-only "defs"
- * (extracted at build), and a FIXED-SIZE pool of real PointLights always
- * sits in the scene. Each update retargets the pool slots at the nearest
- * defs. The visible light count never changes, so three.js never
- * re-compiles the material shaders mid-run (the old light.visible
- * toggling invalidated every program every 200 ms).
- */
-const lightPool = { defs: [], slots: [], used: [], size: -1 };
-
-function collectPerfCullables() {
-  perfCull.shadowCasters.length = 0;
-  if (!scene) return;
-  const wp = _cullPos2;
-  scene.traverse((o) => {
-    if (o.isMesh && o.castShadow && !o.userData.isEnemy && !o.userData.mergedStatic) {
-      o.getWorldPosition(wp);
-      o.userData._cullX = wp.x;
-      o.userData._cullZ = wp.z;
-      perfCull.shadowCasters.push(o);
-    }
-  });
-}
-
-function setLightPoolSize(n) {
-  if (!scene || lightPool.size === n) return;
-  for (const s of lightPool.slots) scene.remove(s);
-  lightPool.slots.length = 0;
-  for (let i = 0; i < n; i++) {
-    const pl = new THREE.PointLight(0xffffff, 0, 16, 2);
-    pl.layers.enable(1); // viewmodel pass shares the pool lighting
-    pl.position.set(0, -50, 0);
-    scene.add(pl);
-    lightPool.slots.push(pl);
-  }
-  lightPool.size = n;
-}
-
-/** Re-target the pool slots at the `size` nearest in-range light defs. */
-function refreshLightPool(p) {
-  const { defs, slots, size } = lightPool;
-  if (size <= 0) return;
-  const used = lightPool.used;
-  used.length = defs.length;
-  used.fill(0);
-  for (let s = 0; s < size; s++) {
-    const slot = slots[s];
-    let best = -1;
-    let bestD = Infinity;
-    for (let i = 0; i < defs.length; i++) {
-      if (used[i]) continue;
-      const d = defs[i];
-      const dx = d.position.x - p.x;
-      const dz = d.position.z - p.z;
-      const range = (d.distance || 20) + 6;
-      const dd = dx * dx + dz * dz;
-      if (dd > range * range) continue;
-      if (dd < bestD) { bestD = dd; best = i; }
-    }
-    if (best < 0) {
-      slot.intensity = 0;
-      continue;
-    }
-    used[best] = 1;
-    const d = defs[best];
-    slot.position.copy(d.position);
-    slot.color.copy(d.color);
-    slot.distance = d.distance;
-    slot.decay = d.decay;
-    slot.intensity = d.intensity;
-  }
-}
-
-const _cullPos = new THREE.Vector3();
-const _cullPos2 = new THREE.Vector3();
-function updatePerfCulling() {
-  if (!controller) return;
-  const q = qualityByKey(opts.quality);
-  const p = controller.position;
-  _cullPos.set(p.x, 0, p.z);
-  const shadowCutoffSq = q.shadowCutoff * q.shadowCutoff;
-  for (const m of perfCull.shadowCasters) {
-    const dx = (m.userData._cullX ?? m.position.x) - p.x;
-    const dz = (m.userData._cullZ ?? m.position.z) - p.z;
-    m.castShadow = q.shadows && (dx * dx + dz * dz) < shadowCutoffSq;
-  }
-  // Zombies too: distant horde members skip the shadow pass. Re-evaluated
-  // every tick so pooled (recycled) groups never come back shadowless.
-  const enemyCutoffSq = q.enemyShadowCutoff * q.enemyShadowCutoff;
-  for (const e of enemies) {
-    const ep = e.group.position;
-    const dx = ep.x - p.x, dz = ep.z - p.z;
-    const near = q.shadows && (dx * dx + dz * dz) < enemyCutoffSq;
-    const meshes = e._meshes;
-    for (let i = 0; i < meshes.length; i++) meshes[i].castShadow = near;
-  }
-}
 let score = 0;
 let playerHealth = 100;
+let maxHealth = 100;
 // Set on death: freezes the loop until the player clicks "Play Again",
 // which rebuilds the run via teardownGame() + buildGame().
 let pendingRestart = false;
@@ -331,18 +129,12 @@ let doublePointsUntil = 0;
 // bleed-out bar. Kills extend it; surviving the whole bar stands you back
 // up. Zombie bites eat the bar directly. ──
 const downed = { active: false, t: 0 };
-const downBarWrap = document.getElementById('downWrap');
-const downBarFill = document.getElementById('downBar');
 
 // ── Carpet bombing drop-in progress ({ dropped, step, n } or null) ──
 let carpet = null;
 
 // ── Weather (outdoor maps only): pure state machine + one Points column ──
 const weather = { enabled: false, state: 'clear', rain: null, fog: null, flashT: 0, boltT: 0 };
-
-// ── Day/night: outdoor maps run a real sun cycle, indoor ones just breathe ──
-let dayPhase = 0.18;
-const DAY_CYCLE_LEN = 240; // seconds for a full day
 
 // Ground blood pools (pooled ring buffer — zero allocation per kill).
 let bloodDecals = null;
@@ -351,8 +143,6 @@ let thompsonMesh = null;
 let mysteryBox = null;
 let mysteryLabel = null;
 let onInteractKey = null;
-// Gamepad "Y" routes here while a run is live (set by buildGame).
-let interactFn = null;
 // Half-extent of the playable area (from the scene) — keeps enemy spawns
 // inside the perimeter walls on enclosed maps.
 let arenaHalf = 45;
@@ -381,72 +171,23 @@ let sandbagStock = 0;
 const sandbags = []; // scene groups with userData.hp — zombies chew through them
 
 // ── Perk machines (CoD zombies style): one of each per map, bought with points ──
-const PERKS = [
-  { key: 'speedCola', label: 'SPEED COLA', icon: '⚡', cost: 1200, color: 0x43a047, hint: '%40 daha hızlı şarjör' },
-  { key: 'doubleTap', label: 'DOUBLE TAP', icon: '🎯', cost: 1500, color: 0xe53935, hint: 'x2 silah hasarı' },
-  { key: 'juggerNog', label: 'JUGGER-NOG', icon: '❤️', cost: 1500, color: 0x8e24aa, hint: '+50 maksimum can' },
-  { key: 'quickRevive', label: 'QUICK REVIVE', icon: '🚑', cost: 1000, color: 0x00acc1, hint: 'Ölümden bir kez döndürür' },
-  { key: 'staminUp', label: 'STAMIN-UP', icon: '🏃', cost: 800, color: 0xfb8c00, hint: '+%15 yürüyüş, +%25 koşu' },
-];
 const machines = []; // { mesh, perk, used }
 const perksHeld = {}; // owned perks for the HUD strip
-let maxHealth = 100;
 
 // ── Heartbeat / growl ambience timers ──
 let beatTimer = 0;
 let growlTimer = 0;
 
-// ── Day/night cycle (light intensities from the scene) ──
-const dayCycle = { t: 0, sun: null, hemi: null, ambient: null, sunBase: 0, hemiBase: 0, ambBase: 0 };
+// ── Render-perf helpers (game/perfCull.js, game/sky.js, game/fx.js) ──
+// Distance-based shadow culling: distant props skip the shadow pass.
+// Refreshed on a slow cadence (0.2s), not per frame.
+const perfCull = { shadowCasters: [], acc: 0 };
+const lightPoolCtl = createLightPool();
+const dayNight = createDayNight();
+const dn = dayNight.state;
+const fx = createFx();
 
-// ── Persistent progression: XP unlocks + lifetime stats (localStorage) ──
-const XP_KEY = 'zombieFront.xp';
-const STATS_KEY = 'zombieFront.stats';
-const ATTACH_UNLOCKED = new Set();
-let totalXp = 0;
-let stats = { kills: 0, headshots: 0, bestRound: 0, bestScore: 0, runs: 0, bestRuns: {} };
-
-/** Record the current run under its map+difficulty record slot. */
-function recordBestRun() {
-  stats.bestRuns = stats.bestRuns || {};
-  const key = `${setup.mapId}:${difficulty.key}`;
-  const cur = stats.bestRuns[key] || { round: 0, score: 0 };
-  stats.bestRuns[key] = {
-    round: Math.max(cur.round, round),
-    score: Math.max(cur.score, score),
-  };
-}
-
-function loadPersisted() {
-  try {
-    totalXp = Number(localStorage.getItem(XP_KEY)) || 0;
-    stats = { ...stats, ...JSON.parse(localStorage.getItem(STATS_KEY) || '{}') };
-  } catch { /* private mode / corrupt data: start fresh */ }
-  for (const [key, meta] of Object.entries(ATTACHMENTS)) {
-    if (totalXp >= (meta.xp || 0)) ATTACH_UNLOCKED.add(key);
-  }
-}
-
-function savePersisted() {
-  try {
-    localStorage.setItem(XP_KEY, String(totalXp));
-    localStorage.setItem(STATS_KEY, JSON.stringify(stats));
-  } catch { /* ignore */ }
-}
-
-/** Award XP and toast newly-unlocked attachments. */
-function addXp(n) {
-  totalXp += n;
-  for (const [key, meta] of Object.entries(ATTACHMENTS)) {
-    if ((meta.xp || 0) > 0 && totalXp >= meta.xp && !ATTACH_UNLOCKED.has(key)) {
-      ATTACH_UNLOCKED.add(key);
-      showToast(`🔓 YENİ AKSESUAR: ${meta.label}`);
-    }
-  }
-  savePersisted();
-}
-
-loadPersisted();
+// ════════════════════════ SETTINGS / QUALITY ════════════════════════
 
 // ── Player settings (pause menu): sensitivity / volume / FOV / quality ──
 const OPTS_KEY = 'zombieFront.opts';
@@ -477,7 +218,6 @@ function applyOpts() {
   }
 }
 
-let shadowTick = 0;
 /** Pixel ratio, shadow map and sun follow — live-swappable from the pause menu. */
 function applyQuality() {
   const q = qualityByKey(opts.quality);
@@ -486,10 +226,11 @@ function applyQuality() {
   renderer.shadowMap.enabled = q.shadows;
   renderer.shadowMap.type = q.shadowType === 'pcfsoft' ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
   renderer.shadowMap.autoUpdate = q.shadows && q.shadowInterval <= 1;
-  if (dayCycle.sun) {
-    dayCycle.sun.castShadow = q.shadows;
+  const sun = dn.sun;
+  if (sun) {
+    sun.castShadow = q.shadows;
     if (q.shadows) {
-      const sm = dayCycle.sun.shadow;
+      const sm = sun.shadow;
       if (sm.mapSize.x !== q.shadowMap) {
         if (sm.map) {
           sm.map.dispose();
@@ -500,11 +241,12 @@ function applyQuality() {
     }
   }
   if (scene && controller) {
-    setLightPoolSize(q.pointPool || 5);
+    lightPoolCtl.setSize(q.pointPool || 5);
     updatePerfCulling();
   }
 }
 
+let shadowTick = 0;
 function applyShadowCadence() {
   const q = qualityByKey(opts.quality);
   if (!q.shadows) {
@@ -520,60 +262,73 @@ function applyShadowCadence() {
   renderer.shadowMap.needsUpdate = (++shadowTick % q.shadowInterval) === 0;
 }
 
-function updateSunFollow() {
-  const sun = dayCycle.sun;
-  if (!sun || !sun.castShadow) return;
-  const q = qualityByKey(opts.quality);
-  const p = controller.position;
-  if (dayCycle.mode === 'cycle') {
-    // Sun rides an arc around the follow target (dayPhase 0..1 = full day).
-    const a = dayPhase * Math.PI * 2;
-    sun.position.set(p.x + Math.cos(a) * 34, Math.max(14, Math.sin(a) * 52), p.z + 12);
-  } else {
-    sun.position.set(p.x + 28, 48, p.z + 12);
-  }
-  sun.target.position.set(p.x, 0, p.z);
-  sun.target.updateMatrixWorld();
-  const cam = sun.shadow.camera;
-  const h = q.shadowFollow;
-  if (cam.right !== h) {
-    cam.left = -h;
-    cam.right = h;
-    cam.top = h;
-    cam.bottom = -h;
-    cam.updateProjectionMatrix();
-  }
+function collectPerfCullables() {
+  perfCull.shadowCasters = scene ? collectShadowCasters(scene) : [];
+}
+
+function updatePerfCulling() {
+  if (!controller) return;
+  updateShadowCulling(perfCull.shadowCasters, enemies, controller.position, qualityByKey(opts.quality));
 }
 
 loadOpts();
 applyQuality();
+
+// ── Pause settings UI: sensitivity / volume / FOV sliders + quality ──
+const pause = createPauseOptions(opts, { applyOpts, applyQuality, saveOpts });
 
 /** True if a ground position is inside any static obstacle (buildings, rubble...). */
 function isBlocked(x, z) {
   return isBlockedAt(x, z, controller.obstacles, 0.5, 0.8);
 }
 
-/** Find a spawn point: inside an UNLOCKED zone (never through a barrier),
- *  outside buildings/rubble, and at least 8 m from the player. */
-function findSpawnPos() {
-  const pos = new THREE.Vector3();
-  const openZones = zones.filter((z) => z.unlocked);
-  for (let tries = 0; tries < 30; tries++) {
-    const zone = openZones[Math.floor(Math.random() * openZones.length)] || zones[0];
-    const [minX, minZ, maxX, maxZ] = zone.rect;
-    const x = minX + Math.random() * (maxX - minX);
-    const z = minZ + Math.random() * (maxZ - minZ);
-    const dx = x - controller.position.x;
-    const dz = z - controller.position.z;
-    if (dx * dx + dz * dz < 64) continue;
-    if (!isBlocked(x, z)) return pos.set(x, 0, z);
-  }
-  // Last resort: a ring around the map center — the main zone always
-  // keeps that area free of obstacles, so the zombie always spawns
-  // somewhere the player can reach.
-  const a = Math.random() * Math.PI * 2;
-  return pos.set(Math.cos(a) * 12, 0, Math.sin(a) * 12);
+// ── HUD refresh helpers (the actual DOM work lives in ui/hud.js) ──
+function updateHUD() {
+  hud.update({
+    score,
+    health: playerHealth,
+    round,
+    gear: weaponManager
+      ? `💣 ${weaponManager.noisemakers}  🧱 ${sandbagStock}  🧨 ${weaponManager.grenadesReady}  [G/B/H]`
+      : undefined,
+    perksHeld,
+  });
 }
+
+function updateBuffs(now) {
+  let weatherTag = '';
+  if (weather.enabled && weather.state === 'storm') weatherTag = '⛈ FIRTINA';
+  else if (weather.enabled && weather.state === 'rain') weatherTag = '🌧 YAĞMUR';
+  hud.updateBuffs({
+    difficultyTag: difficulty.scoreMul > 1 ? `${difficulty.icon} ${difficulty.label} x${difficulty.scoreMul}` : '',
+    weatherTag,
+    instaKillUntil,
+    doublePointsUntil,
+    now,
+  });
+}
+
+/** Hand the live POIs (box, PaP, wall guns, breached barriers) to the
+ *  compass ribbon. */
+function drawCompass() {
+  if (!controller) return;
+  hud.beginPois();
+  if (mysteryBox) hud.pushPoi(mysteryBox.position.x, mysteryBox.position.z, '#ffee58', '?');
+  if (papMachine && !papMachine.used) {
+    hud.pushPoi(papMachine.mesh.position.x, papMachine.mesh.position.z, '#ce93d8', 'P');
+  }
+  for (const g of wallGuns) {
+    if (!g.used) hud.pushPoi(g.mesh.position.x, g.mesh.position.z, '#90caf9', 'G');
+  }
+  for (const b of barriers) {
+    if (b.open && !b.collapsed && barrierNeedsRepair(b.hp)) {
+      hud.pushPoi(b.mesh.position.x, b.mesh.position.z, '#ff8a65', '!');
+    }
+  }
+  hud.drawCompass(camera, controller.position);
+}
+
+// ════════════════════════════ WAVES / LOOT ════════════════════════════
 
 function spawnWave() {
   waveState = 'active';
@@ -605,7 +360,7 @@ function spawnWave() {
     onBossRoar: () => { weaponManager.sfx.bossRoar(); gamepad.rumble(0.8, 0.9, 300); },
   });
   for (let i = 0; i < count; i++) {
-    const pos = findSpawnPos();
+    const pos = spawner.findSpawnPos();
     // Type mix gets nastier with the round (pure sprinters on sprint rounds,
     // a crab infestation mixed in on incursion rounds).
     const type = sprint ? 'sprinter'
@@ -617,7 +372,7 @@ function spawnWave() {
   // Boss round: heavy red elites walk in — big HP pool, big payout.
   if (boss) {
     for (let b = 0; b < bossCount(round); b++) {
-      const enemy = new Enemy(scene, findSpawnPos(), enemyOptions('boss'));
+      const enemy = new Enemy(scene, spawner.findSpawnPos(), enemyOptions('boss'));
       enemies.push(enemy);
     }
     weaponManager.sfx.zombieScream();
@@ -632,7 +387,7 @@ function bossSummon(pos) {
   if (sprinters >= 6) return;
   const { hp, spd, dmg } = applyDifficulty(waveParams(round), difficulty);
   for (let i = 0; i < 2; i++) {
-    const p = findSpawnPosNear(pos);
+    const p = spawner.findSpawnPosNear(pos);
     const e = new Enemy(scene, p, {
       type: 'sprinter', speed: spd, health: hp, damage: dmg,
       obstacles: controller.obstacles, sandbags, barriers, windows,
@@ -642,106 +397,6 @@ function bossSummon(pos) {
     weaponManager.setTargets(enemies.map((x) => x.group));
   }
   showToast('☠ Boss takviye çağırdı!');
-}
-
-/** A clear spawn spot near a point (falls back to the global picker). */
-function findSpawnPosNear(pos) {
-  const out = new THREE.Vector3();
-  for (let i = 0; i < 12; i++) {
-    const a = Math.random() * Math.PI * 2;
-    const r = 2.5 + Math.random() * 3;
-    const x = pos.x + Math.cos(a) * r;
-    const z = pos.z + Math.sin(a) * r;
-    if (Math.abs(x) > arenaHalf - 1 || Math.abs(z) > arenaHalf - 1) continue;
-    if (!isBlocked(x, z)) return out.set(x, 0, z);
-  }
-  return findSpawnPos();
-}
-
-/** Scatter one perk machine per perk on open ground, facing map center. */
-function spawnPerkMachines() {
-  const spots = [];
-  for (const perk of PERKS) {
-    for (let tries = 0; tries < 80; tries++) {
-      const a = Math.random() * Math.PI * 2;
-      const r = 8 + Math.random() * 9;
-      const x = Math.cos(a) * r;
-      const z = Math.sin(a) * r;
-      if (Math.abs(x) > arenaHalf - 2 || Math.abs(z) > arenaHalf - 2) continue;
-      if (isBlocked(x, z)) continue;
-      // Keep off the mystery box (0,0), the wall-Thompson spot (5,-11) and
-      // every wall-gun / Pack-a-Punch mount placed before this loop.
-      if (x * x + z * z < 9) continue;
-      if ((x - 5) ** 2 + (z + 11) ** 2 < 9) continue;
-      if (papMachine && (papMachine.mesh.position.x - x) ** 2 + (papMachine.mesh.position.z - z) ** 2 < 12) continue;
-      if (wallGuns.some((g) => (g.mesh.position.x - x) ** 2 + (g.mesh.position.z - z) ** 2 < 8)) continue;
-      if (spots.some(([sx, sz]) => (sx - x) ** 2 + (sz - z) ** 2 < 16)) continue;
-      const mesh = createPerkMachine(perk.label, perk.cost, perk.color);
-      mesh.position.set(x, 0, z);
-      mesh.rotation.y = Math.atan2(-x, -z); // brand panel faces the center
-      scene.add(mesh);
-      controller.obstacles.push(mesh);
-      spots.push([x, z]);
-      machines.push({ mesh, perk, used: false });
-      break;
-    }
-  }
-  if (machines.length) {
-    showToast(`${machines.length} perk makinesi haritada — yaklaşıp E bas`);
-  }
-}
-
-/**
- * Mount the three wall guns FLUSH on real wall faces and place the
- * Pack-a-Punch station on open ground in the core zone (pure solvers in
- * game/zombies.js). Each mount offers a different weapon for points; the
- * PaP upgrades the ACTIVE gun once per run.
- */
-function spawnSpecialMachines() {
-  const spots = machineSpots({ zones, isBlocked, spin: (stats.runs || 0) * 0.7 });
-  const names = WEAPON_DEFS.filter((d) => !d.wonder).map((d) => d.name);
-  const trio = wallGunNames(names, stats.runs || 0);
-
-  // Wall guns: hug building/perimeter walls, front facing the walkable side.
-  const solids = [];
-  for (const o of controller.obstacles) {
-    const col = o.userData.collision;
-    if (col) solids.push({ x: o.position.x, z: o.position.z, sx: col.size.x, sy: col.size.y, sz: col.size.z });
-  }
-  const mounts = wallGunSpots(solids, {
-    isBlocked,
-    zoneRects: zones.filter((z) => z.unlocked).map((z) => z.rect),
-    arenaHalf,
-    keepOut: [[0, 0, 4], [5, -11, 4], ...(spots.pap ? [[spots.pap[0], spots.pap[1], 6]] : [])],
-  });
-  // Fallback: on maps with few usable wall faces, top the trio up with
-  // free-standing floor mounts (facing the map center).
-  for (const [wx, wz] of spots.walls) {
-    if (mounts.length >= trio.length) break;
-    mounts.push({ x: wx, z: wz, rotY: Math.atan2(-wx, -wz) });
-  }
-  mounts.forEach((m, i) => {
-    const weapon = trio[i % trio.length];
-    const cost = wallGunCost(i);
-    const label = WEAPON_LABELS[weapon] || weapon;
-    const mesh = createWallGun(label, cost);
-    mesh.position.set(m.x, 0, m.z);
-    mesh.rotation.y = m.rotY; // flush on the wall, front off the face
-    scene.add(mesh);
-    wallGuns.push({ mesh, weapon, cost, used: false });
-  });
-  if (spots.pap) {
-    const [x, z] = spots.pap;
-    const mesh = createPapMachine(PAP_COST);
-    mesh.position.set(x, 0, z);
-    mesh.rotation.y = Math.atan2(-x, -z);
-    scene.add(mesh);
-    controller.obstacles.push(mesh);
-    papMachine = { mesh, used: false };
-  }
-  if (wallGuns.length || papMachine) {
-    showToast('🔫 Duvarda silahlar + PACK-A-PUNCH haritada — E ile kullan');
-  }
 }
 
 /** Grant a perk's effect immediately. */
@@ -801,22 +456,27 @@ function placeSandbag() {
   updateHUD();
 }
 
-// --- Power-ups (drop on kill ~25%, pick up by proximity) ---
-const POWERUP_TYPES = [
-  { key: 'Ammo', color: 0xffa726, label: 'CEP', weight: 24 },
-  { key: 'MaxAmmo', color: 0x00ff88, label: 'MAX', weight: 8 },
-  { key: 'InstaKill', color: 0xffff00, label: 'IK', weight: 12 },
-  { key: 'Nuke', color: 0xffaa00, label: 'NUK', weight: 7 },
-  { key: 'DoublePoints', color: 0x00ff00, label: 'x2', weight: 14 },
-  { key: 'MedKit', color: 0xff5252, label: 'MED', weight: 14 },
-  { key: 'Carpet', color: 0x8d6e63, label: 'CARPET', weight: 6 },
-  { key: 'DoubleAmmo', color: 0xffb300, label: 'x2CEP', weight: 8 },
-  { key: 'Dragon', color: 0xff6d00, label: 'EJDER', weight: 9 },
-  { key: 'Shock', color: 0x40c4ff, label: 'ŞOK', weight: 9 },
-  { key: 'FragRound', color: 0xef5350, label: 'PATLAR', weight: 6 },
-];
+// ── E / gamepad-Y interaction chain (perk → PaP → barrier → wall gun →
+// thompson → mystery box — see game/interactions.js). Score flows through
+// spend() so the HUD readout always matches the balance. ──
+const interactPrimary = createInteractions({
+  getScene: () => scene,
+  getController: () => controller,
+  getWeapons: () => weaponManager,
+  gamepad,
+  getScore: () => score,
+  spend: (n) => { score -= n; updateHUD(); },
+  showToast,
+  machines,
+  barriers,
+  zones,
+  wallGuns,
+  getPap: () => papMachine,
+  getThompson: () => thompsonMesh,
+  getMysteryBox: () => mysteryBox,
+  applyPerk,
+});
 
-/** Carpet bombing: n bombs walk in over the player across ~2 s. */
 function startCarpetBombing() {
   carpet = { t: 0, step: CARPET_DURATION / CARPET_BOMBS, n: CARPET_BOMBS, dropped: 0, kills: 0 };
   showToast('✈️ HALI BOMBARDIMANI GELİYOR!');
@@ -829,43 +489,14 @@ function addScore(base) {
   updateHUD();
 }
 
-// One shared pickup mesh (only the colour changes) — used to build and
-// dispose a fresh OctahedronGeometry for every single drop.
-const POWERUP_GEO = new THREE.OctahedronGeometry(0.3, 0);
-
-function spawnPowerUp(pos, forcedKey = null) {
-  const t = forcedKey
-    ? POWERUP_TYPES.find((p) => p.key === forcedKey)
-    : weightedPick(POWERUP_TYPES);
-  const mat = new THREE.MeshStandardMaterial({
-    color: t.color,
-    emissive: t.color,
-    emissiveIntensity: 0.8,
-    roughness: 0.3,
-  });
-  const mesh = new THREE.Mesh(POWERUP_GEO, mat);
-  // Zombies walk through walls while dying — nudge the drop back toward the
-  // map center until it sits in open ground the player can actually reach.
-  let { x, z } = pos;
-  if (isBlocked(x, z)) {
-    const len = Math.hypot(x, z) || 1;
-    const stepX = -x / len;
-    const stepZ = -z / len;
-    for (let i = 0; i < 40; i++) {
-      x += stepX;
-      z += stepZ;
-      if (!isBlocked(x, z)) break;
-    }
-  }
-  mesh.position.set(x, 0.5, z);
-  mesh.castShadow = true;
-  mesh.userData.key = t.key;
-  scene.add(mesh);
-  powerUps.push(mesh);
+// ── Power-ups (drop on kill ~25%, pick up by proximity; table in
+// game/powerups.js) ──
+function dropPowerUp(pos, forcedKey = null) {
+  powerUps.push(spawnPowerUp(scene, pos, isBlocked, forcedKey));
 }
 
 function applyPowerUp(key) {
-  const t = POWERUP_TYPES.find((p) => p.key === key);
+  const t = powerUpType(key);
   if (t) {
     showToast(`${t.label} Picked`);
     weaponManager.sfx.powerUp();
@@ -887,8 +518,8 @@ function applyPowerUp(key) {
     if (enemies.length === 0 && waveState === 'active') {
       showToast('Wave Cleared');
       if (round > stats.bestRound) stats.bestRound = round;
-      recordBestRun();
-      savePersisted();
+      recordBestRun(setup.mapId, difficulty.key, round, score);
+      saveProgress();
       round++;
       startPrep(8);
       if (downed.active) standUp();
@@ -919,7 +550,7 @@ function killCredit(enemy, isHeadshot = false) {
   addXp(isHeadshot ? 15 : 10);
   stats.kills++;
   if (isHeadshot) stats.headshots++;
-  if (stats.kills % 5 === 0) savePersisted();
+  if (stats.kills % 5 === 0) saveProgress();
   weaponManager.sfx.enemyDeath();
   if (enemy.type === 'headcrab') weaponManager.sfx.headcrabChirp(0.3);
   else weaponManager.sfx.zombieScream();
@@ -934,18 +565,12 @@ function killCredit(enemy, isHeadshot = false) {
     downed.t = extendDowned(downed.t);
     showToast('🩸 SON NEFES! +1.5 sn');
   }
-  if (enemy.type === 'brute') spawnPowerUp(enemy.group.position, 'MedKit');
-  else if (enemy.type === 'boss') spawnPowerUp(enemy.group.position, 'MaxAmmo');
-  else if (Math.random() < 0.25) spawnPowerUp(enemy.group.position);
+  if (enemy.type === 'brute') dropPowerUp(enemy.group.position, 'MedKit');
+  else if (enemy.type === 'boss') dropPowerUp(enemy.group.position, 'MaxAmmo');
+  else if (Math.random() < 0.25) dropPowerUp(enemy.group.position);
 }
 
 // ── Downed lifecycle ──
-function setDownedBar(visible, frac = 1) {
-  if (!downBarWrap || !downBarFill) return;
-  downBarWrap.classList.toggle('hidden', !visible);
-  downBarFill.style.width = `${Math.round(frac * 100)}%`;
-}
-
 function beginDowned() {
   downed.active = true;
   downed.t = DOWNED_DURATION;
@@ -954,7 +579,7 @@ function beginDowned() {
   weaponManager.sfx.bossRoar(); // low "I'm hit" sting
   gamepad.rumble(1, 1, 600);
   showToast('🩸 YERE DÜŞTÜN! Kanarken öldür, ya da bar bitince ayağa kalk');
-  setDownedBar(true, 1);
+  hud.setDownBar(true, 1);
   updateHUD();
 }
 
@@ -962,7 +587,7 @@ function standUp() {
   downed.active = false;
   controller.downed = false;
   playerHealth = DOWNED_REVIVE_HP;
-  setDownedBar(false);
+  hud.setDownBar(false);
   weaponManager.sfx.powerUp();
   gamepad.rumble(0.5, 0.8, 220);
   showToast(`🩸 AYAĞA KALKTIN! +${DOWNED_REVIVE_HP} can`);
@@ -972,12 +597,12 @@ function standUp() {
 /** Terminal death: freeze the run and wait for "Play Again". */
 function gameOver() {
   downed.active = false;
-  setDownedBar(false);
+  hud.setDownBar(false);
   pendingRestart = true;
   if (score > stats.bestScore) stats.bestScore = score;
   if (round > stats.bestRound) stats.bestRound = round;
-  recordBestRun();
-  savePersisted();
+  recordBestRun(setup.mapId, difficulty.key, round, score);
+  saveProgress();
   for (const e of enemies) e.release();
   enemies = [];
   weaponManager.setTargets([]);
@@ -985,7 +610,7 @@ function gameOver() {
   overlay.querySelector('h1').textContent = 'GAME OVER';
   overlay.querySelector('p').textContent = `Skor: ${score} · Tur: ${round}`;
   startBtn.textContent = '↻ Tekrar Oyna';
-  pausePanel?.classList.add('hidden');
+  pause.panel?.classList.add('hidden');
   gamepad.rumble(1, 1, 700);
   document.exitPointerLock();
 }
@@ -1004,7 +629,7 @@ function blastEnemies(center, radius, damage) {
   return kills;
 }
 
-// ── Weather: state roll + cheap per-frame drive (rain column, fog, bolts) ──
+// ── Weather: state roll (the per-frame drive is in game/sky.js) ──
 function rollNewWeather() {
   if (!weather.enabled) return;
   weather.state = rollWeather(round);
@@ -1016,58 +641,9 @@ function rollNewWeather() {
   }
 }
 
-// ── Explosion FX (bomber detonation): expanding additive orb ──
-// Orbs are pooled (each keeps its own material so overlapping blasts never
-// fade each other) — bombers used to alloc a sphere per detonation.
-const fxList = [];
-const ORB_GEO = new THREE.SphereGeometry(0.5, 12, 12);
-const orbPool = [];
-
+// ── Explosion FX: pooled expanding orbs (game/fx.js) ──
 function spawnExplosion(pos, playSound = true, color = 0xff9944) {
-  if (!scene) return;
-  if (playSound) weaponManager.sfx.explosion();
-  let orb = orbPool.pop();
-  if (!orb) {
-    const mat = new THREE.MeshBasicMaterial({
-      color: 0xff9944,
-      transparent: true,
-      opacity: 0.95,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    });
-    orb = new THREE.Mesh(ORB_GEO, mat);
-  }
-  orb.material.color.setHex(color);
-  orb.material.opacity = 0.95;
-  orb.visible = true;
-  orb.position.copy(pos).setY(0.8);
-  orb.scale.setScalar(1);
-  scene.add(orb);
-  fxList.push({ orb, mat: orb.material, t: 0 });
-}
-
-function releaseOrbPool() {
-  // Geometry is the shared ORB_GEO — only per-orb materials are released.
-  for (const orb of orbPool) orb.material.dispose();
-  orbPool.length = 0;
-}
-
-function updateFx(dt) {
-  for (let i = fxList.length - 1; i >= 0; i--) {
-    const f = fxList[i];
-    f.t += dt;
-    const k = f.t / 0.45;
-    f.orb.scale.setScalar(1 + k * 6);
-    f.mat.opacity = 0.95 * (1 - k);
-    if (k >= 1) {
-      scene.remove(f.orb);
-      f.orb.visible = false;
-      // ORB_GEO is shared across every orb — only the material is per-orb.
-      if (orbPool.length >= 6) f.mat.dispose();
-      else orbPool.push(f.orb);
-      fxList.splice(i, 1);
-    }
-  }
+  fx.spawn(scene, weaponManager?.sfx, pos, playSound, color);
 }
 
 // ── Directional audio helper: stereo pan (-1..1) of a world point relative
@@ -1088,128 +664,14 @@ function audioPan(worldPos) {
   return THREE.MathUtils.clamp(_toV.x * -_fwdV.z + _toV.z * _fwdV.x, -1, 1);
 }
 
-/** Show a short-lived toast notification (e.g. "Wave Cleared", "MAX Picked"). */
-function showToast(text) {
-  if (!toastsEl) return;
-  const el = document.createElement('div');
-  el.className = 'toast';
-  el.textContent = text;
-  toastsEl.appendChild(el);
-  // Keep the stack short; remove after the fade-out animation.
-  setTimeout(() => el.remove(), 2700);
-  while (toastsEl.children.length > 4) toastsEl.firstChild.remove();
-}
-
-function updateHUD() {
-  if (hudScore) hudScore.textContent = String(score);
-  if (hudHealth) hudHealth.textContent = String(Math.max(0, playerHealth));
-  if (hudRound) hudRound.textContent = String(round);
-  if (hudGear && weaponManager) {
-    hudGear.textContent = `💣 ${weaponManager.noisemakers}  🧱 ${sandbagStock}  🧨 ${weaponManager.grenadesReady}  [G/B/H]`;
-  }
-  if (hudPerks) {
-    const owned = PERKS.filter((p) => perksHeld[p.key]);
-    hudPerks.textContent = owned.length
-      ? owned.map((p) => `${p.icon} ${p.label}`).join('  ·  ')
-      : '';
-  }
-}
-
-// ── Buff countdown strip (insta-kill / double points / difficulty tag) ──
-function updateBuffs(now) {
-  if (!hudBuffs) return;
-  const parts = [];
-  if (difficulty.scoreMul > 1) parts.push(`${difficulty.icon} ${difficulty.label} x${difficulty.scoreMul}`);
-  if (weather.enabled && weather.state === 'storm') parts.push('⛈ FIRTINA');
-  else if (weather.enabled && weather.state === 'rain') parts.push('🌧 YAĞMUR');
-  if (now < instaKillUntil) parts.push(`☠ INSTA-KILL ${Math.ceil((instaKillUntil - now) / 1000)}s`);
-  if (now < doublePointsUntil) parts.push(`✕2 PUAN ${Math.ceil((doublePointsUntil - now) / 1000)}s`);
-  const txt = parts.join('   ·   ');
-  if (hudBuffs.textContent !== txt) hudBuffs.textContent = txt;
-}
-
-// ── Compass strip: world cardinals + live POI markers (box, PaP, walls,
-// breached barriers) projected by bearing onto a flat ±100° ribbon. ──
-const COMPASS_SPAN = (100 * Math.PI) / 180;
-const CARDINALS = [[0, 'K'], [Math.PI / 2, 'D'], [Math.PI, 'G'], [-Math.PI / 2, 'B']];
-// POI dot rows are rebuilt every frame; reuse pre-allocated slots so the
-// compass never allocates. Each entry: [x, z, color, label].
-const compassPois = [];
-for (let i = 0; i < 64; i++) compassPois.push([0, 0, '', '']);
-let compassPoiN = 0;
-function pushPoi(x, z, col, label) {
-  const e = compassPois[compassPoiN];
-  if (!e) return;
-  e[0] = x; e[1] = z; e[2] = col; e[3] = label;
-  compassPoiN++;
-}
-
-function drawCompass() {
-  if (!compassCtx || !controller) return;
-  const w = compassEl.width;
-  const h = compassEl.height;
-  const ctx = compassCtx;
-  ctx.clearRect(0, 0, w, h);
-
-  camera.getWorldDirection(_fwdV);
-  _fwdV.y = 0;
-  if (_fwdV.lengthSq() < 1e-6) return;
-  _fwdV.normalize();
-  const rx = -_fwdV.z;
-  const rz = _fwdV.x;
-  const heading = Math.atan2(_fwdV.x, -_fwdV.z); // 0 = world north (-Z)
-
-  // Cardinal ticks
-  ctx.font = 'bold 13px monospace';
-  ctx.textAlign = 'center';
-  for (const [a, label] of CARDINALS) {
-    let d = a - heading;
-    d = Math.atan2(Math.sin(d), Math.cos(d));
-    if (Math.abs(d) > COMPASS_SPAN) continue;
-    ctx.fillStyle = label === 'K' ? '#ef5350' : '#cfc9b5';
-    ctx.fillText(label, w / 2 + (d / COMPASS_SPAN) * (w / 2), 14);
-  }
-
-  // POI dots
-  compassPoiN = 0;
-  if (mysteryBox) pushPoi(mysteryBox.position.x, mysteryBox.position.z, '#ffee58', '?');
-  if (papMachine && !papMachine.used) {
-    pushPoi(papMachine.mesh.position.x, papMachine.mesh.position.z, '#ce93d8', 'P');
-  }
-  for (const g of wallGuns) {
-    if (!g.used) pushPoi(g.mesh.position.x, g.mesh.position.z, '#90caf9', 'G');
-  }
-  for (const b of barriers) {
-    if (b.open && !b.collapsed && barrierNeedsRepair(b.hp)) {
-      pushPoi(b.mesh.position.x, b.mesh.position.z, '#ff8a65', '!');
-    }
-  }
-  ctx.font = 'bold 11px monospace';
-  for (let pi = 0; pi < compassPoiN; pi++) {
-    const [px, pz, col, label] = compassPois[pi];
-    const dx = px - controller.position.x;
-    const dz = pz - controller.position.z;
-    const len = Math.hypot(dx, dz);
-    if (len < 0.1) continue;
-    const ang = Math.atan2((dx * rx + dz * rz) / len, (dx * _fwdV.x + dz * _fwdV.z) / len);
-    if (Math.abs(ang) > COMPASS_SPAN) continue;
-    const x = w / 2 + (ang / COMPASS_SPAN) * (w / 2);
-    ctx.fillStyle = col;
-    ctx.beginPath();
-    ctx.arc(x, h - 10, 6, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#141410';
-    ctx.fillText(label, x, h - 6);
-  }
-}
-
 // ════════════════════════ BUILD / TEARDOWN ════════════════════════
 
 function buildGame() {
   const built = createScene(setup.mapId);
   scene = built.scene;
   arenaHalf = built.arenaHalf ?? 45;
-  lightPool.defs = built.pointLights || [];
+  lightPoolCtl.bind(scene);
+  lightPoolCtl.pool.defs = built.pointLights || [];
   // Zones & barriers: gated zones stay locked (and spawn-inert) until bought.
   barriers.length = 0;
   for (const b of built.barriers || []) barriers.push({ ...b, open: false, hp: BARRIER_HP, collapsed: false });
@@ -1370,184 +832,12 @@ function buildGame() {
     if (e.code !== 'KeyE') return;
     interactPrimary();
   };
-  interactFn = interactPrimary;
   document.addEventListener('keydown', onInteractKey);
-
-  /** E / gamepad-Y: nearest interaction (perk → barrier → wall gun → box). */
-  function interactPrimary() {
-    if (!controller) return;
-    // Perk machines take priority over wall purchases.
-    for (const m of machines) {
-      if (m.mesh.position.distanceTo(controller.position) > 2.2) continue;
-      if (m.used) {
-        showToast(`${m.perk.label} zaten alındı`);
-        return;
-      }
-      if (score < m.perk.cost) {
-        showToast(`Puan yetmez — ${m.perk.label}: ${m.perk.cost} puan`);
-        return;
-      }
-      score -= m.perk.cost;
-      m.used = true;
-      markMachineSold(m.mesh);
-      applyPerk(m.perk.key);
-      weaponManager.sfx.powerUp();
-      gamepad.rumble(0.5, 0.7, 160);
-      showToast(`${m.perk.icon} ${m.perk.label} — ${m.perk.hint}`);
-      return;
-    }
-    // Pack-a-Punch: upgrade the ACTIVE weapon once per run.
-    if (papMachine && !papMachine.used
-        && papMachine.mesh.position.distanceTo(controller.position) < 2.8) {
-      const baseName = weaponManager.activeDef.name;
-      if (weaponManager.papHeld.has(baseName)) {
-        showToast('Bu silah zaten PACK-A-PUNCH — başka silahla gel');
-        return;
-      }
-      if (score < PAP_COST) {
-        showToast(`Puan yetmez — Pack-a-Punch: ${PAP_COST} puan`);
-        return;
-      }
-      const upgraded = weaponManager.packAPunch();
-      if (!upgraded) {
-        showToast('Silah şu an yükseltilemiyor (şarjör/swap bekleyin)');
-        return;
-      }
-      score -= PAP_COST;
-      papMachine.used = true;
-      retintLabelSign(papMachine.mesh.userData.sign, 'PACK-A-PUNCH', 'KULLANILDI');
-      weaponManager.sfx.powerUp();
-      gamepad.rumble(1, 1, 450);
-      const def = WEAPON_DEFS.find((d) => d.name === upgraded);
-      showToast(`⚡ PACK-A-PUNCH! ${def ? papLabel(def) : upgraded}`);
-      addXp(50);
-      updateHUD();
-      return;
-    }
-    // Damaged (opened) barriers: patch them back before the horde rips them shut.
-    for (const b of barriers) {
-      if (!b.open || b.collapsed || !barrierNeedsRepair(b.hp)) continue;
-      if (b.mesh.position.distanceTo(controller.position) > 2.8) continue;
-      if (score < BARRIER_REPAIR_COST) {
-        showToast(`Puan yetmez — barikat tamiri: ${BARRIER_REPAIR_COST} puan`);
-        return;
-      }
-      score -= BARRIER_REPAIR_COST;
-      b.hp = BARRIER_HP;
-      weaponManager.sfx.clatter(false);
-      weaponManager.sfx.powerUp();
-      showToast(`🔧 Barikat onarıldı (−${BARRIER_REPAIR_COST})`);
-      updateHUD();
-      return;
-    }
-    // Map barriers: pay points to tear down and open the sealed zone.
-    // A torn-down (auto-resealed) barrier can be bought again to clear the
-    // rubble path — otherwise zombies stuck behind it could never be killed.
-    for (const b of barriers) {
-      if (b.open && !b.collapsed) continue;
-      if (b.mesh.position.distanceTo(controller.position) > 2.8) continue;
-      if (score < b.cost) {
-        showToast(`Puan yetmez — barikat: ${b.cost} puan`);
-        return;
-      }
-      const wasCollapsed = b.collapsed;
-      score -= b.cost;
-      b.open = true;
-      b.collapsed = false;
-      b.hp = BARRIER_HP;
-      if (wasCollapsed) {
-        scene.remove(b.mesh); // rubble path cleared (mesh already torn down)
-        disposeSceneAssets(b.mesh);
-      } else {
-        // Knocked-down look: the frame stays as a low barrier the horde
-        // will chew back down — its height reads the remaining HP.
-        b.mesh.scale.y = 0.35;
-        const lockSign = b.mesh.children.find((c) => c.isSprite);
-        if (lockSign) lockSign.visible = false;
-      }
-      const oi = controller.obstacles.indexOf(b.collider);
-      if (oi !== -1) controller.obstacles.splice(oi, 1);
-      const zn = zones.find((z) => z.id === b.zone);
-      if (zn) zn.unlocked = true;
-      weaponManager.sfx.clatter(true);
-      weaponManager.sfx.powerUp();
-      gamepad.rumble(0.5, 0.7, 160);
-      showToast(wasCollapsed
-        ? `🧹 Geçit yeniden açıldı (−${b.cost})`
-        : `🪵 Barikat kaldırıldı! Yeni bölge açıldı (−${b.cost})`);
-      updateHUD();
-      return;
-    }
-    // Wall-gun mounts: pay points, the gun replaces your active slot.
-    for (const g of wallGuns) {
-      if (g.used) continue;
-      if (g.mesh.position.distanceTo(controller.position) > 2.3) continue;
-      const label = WEAPON_LABELS[g.weapon] || g.weapon;
-      if (score < g.cost) {
-        showToast(`Puan yetmez — ${label}: ${g.cost} puan`);
-        return;
-      }
-      score -= g.cost;
-      g.used = true;
-      g.mesh.userData.glowMat.emissiveIntensity = 0.05;
-      g.mesh.userData.glowMat.color.setHex(0x3a3d40);
-      retintLabelSign(g.mesh.userData.sign, label, 'SOLD');
-      const granted = weaponManager.grantWeapon(g.weapon);
-      weaponManager.sfx.powerUp();
-      gamepad.rumble(0.5, 0.8, 160);
-      showToast(granted ? `🔫 DUVARDAN: ${label}!` : `${label} zaten sende — mermi ikmali!`);
-      updateHUD();
-      return;
-    }
-    const thompsonDist = thompsonMesh.position.distanceTo(controller.position);
-    if (thompsonDist < 2.0) {
-      if (score < 1500) {
-        showToast('Puan yetmez — Thompson: 1500 puan');
-        return;
-      }
-      score -= 1500;
-      updateHUD();
-      const granted = weaponManager.grantWeapon('Thompson');
-      scene.remove(thompsonMesh);
-      showToast(granted ? 'Thompson Picked' : 'Thompson zaten sende — mermi ikmali!');
-      weaponManager.sfx.powerUp();
-      return;
-    }
-    const dist = mysteryBox.position.distanceTo(controller.position);
-    if (dist < 2.0) {
-      if (score < 950) {
-        showToast('Puan yetmez — gizemli kutu: 950 puan');
-        return;
-      }
-      score -= 950;
-      updateHUD();
-      // CoD-style loot table: all 8 guns, weighted by rarity. Paying again on
-      // the same box is a reroll.
-      const gift = weightedPick(MYSTERY_POOL);
-      const granted = weaponManager.grantWeapon(gift.name);
-      weaponManager.sfx.powerUp();
-      if (gift.rarity === 'WONDER') {
-        weaponManager.sfx.rayShot();
-        gamepad.rumble(1, 1, 600);
-        addXp(100);
-        showToast('🛸 WONDER WEAPON: RAY GUN!!');
-      } else {
-        gamepad.rumble(gift.rarity === 'EFSANE' || gift.rarity === 'NADIR' ? 0.9 : 0.5, 0.8, 220);
-        showToast(
-          granted
-            ? `🎲 ${gift.rarity}: ${
-                (WEAPON_DEFS.find((d) => d.name === granted) || weaponManager.activeDef).label
-              }!`
-            : `🎲 Aynısından vardı — cephane doldu (${gift.rarity})`
-        );
-      }
-    }
-  }
 
   // Reset run state
   pendingRestart = false;
   stats.runs = (stats.runs || 0) + 1;
-  savePersisted();
+  saveProgress();
   enemies = [];
   round = 1;
   score = 0;
@@ -1559,21 +849,16 @@ function buildGame() {
   for (const k of Object.keys(perksHeld)) delete perksHeld[k];
   downed.active = false;
   downed.t = 0;
-  setDownedBar(false);
+  hud.setDownBar(false);
   carpet = null;
 
   // Day/night cycle: remember the scene's base light intensities.
-  dayCycle.t = 0;
-  dayCycle.sun = built.lights?.sun ?? null;
-  dayCycle.hemi = built.lights?.hemi ?? null;
-  dayCycle.ambient = built.lights?.ambient ?? null;
-  dayCycle.sunBase = dayCycle.sun ? dayCycle.sun.intensity : 0;
-  dayCycle.hemiBase = dayCycle.hemi ? dayCycle.hemi.intensity : 0;
-  dayCycle.ambBase = dayCycle.ambient ? dayCycle.ambient.intensity : 0;
-  // Outdoor maps run a real sun arc (dawn → dusk); the rest keep the old
-  // ~3-minute intensity breathing (the bunker has no sun at all anyway).
-  dayCycle.mode = built.meta?.outdoor ? 'cycle' : 'breathe';
-  dayPhase = 0.16; // early morning — night falls deep into a run
+  dayNight.configure({
+    sun: built.lights?.sun ?? null,
+    hemi: built.lights?.hemi ?? null,
+    ambient: built.lights?.ambient ?? null,
+    outdoor: !!built.meta?.outdoor,
+  });
 
   // Weather: rain column + fog + lightning only where the sky is open.
   weather.enabled = !!built.meta?.outdoor;
@@ -1597,46 +882,36 @@ function buildGame() {
 
   // Wall-gun mounts + the Pack-a-Punch station first, then perk machines
   // scattered around them (the perk spots avoid every special machine).
-  spawnSpecialMachines();
-  spawnPerkMachines();
+  spawner = new Spawner({
+    scene,
+    controller,
+    zones,
+    arenaHalf,
+    isBlocked,
+    machines,
+    wallGuns,
+    setPap: (m) => { papMachine = m; },
+    showToast,
+  });
+  spawner.spawnSpecialMachines({
+    names: WEAPON_DEFS.filter((d) => !d.wonder).map((d) => d.name),
+    runIndex: stats.runs || 0,
+    unlockedRects: zones.filter((z) => z.unlocked).map((z) => z.rect),
+  });
+  spawner.spawnPerkMachines(PERKS, papMachine);
   collectPerfCullables();
   applyQuality();
-  if (dayCycle.sun && !dayCycle.sun.target.parent) scene.add(dayCycle.sun.target);
+  if (dn.sun && !dn.sun.target.parent) scene.add(dn.sun.target);
 
   // Prep phase before wave 1: build sandbags, then the front line arrives.
   startPrep(5);
   updateHUD();
 }
 
-/**
- * Release the GPU memory of a finished scene. Three.js resources are NOT
- * reclaimed by the JS garbage collector — geometries/materials/textures
- * must be disposed explicitly, or every restart leaks another map's worth
- * of VRAM. Enemy pooled groups and cached gun assets are already out of
- * the scene by the time this runs (they're recycled across runs).
- */
-function disposeSceneAssets(root) {
-  root.traverse((o) => {
-    if (o.isLight) return;
-    if (o.geometry) o.geometry.dispose();
-    const mats = o.material ? (Array.isArray(o.material) ? o.material : [o.material]) : null;
-    if (!mats) return;
-    for (const m of mats) {
-      // ModelLoader's DataTexture materials are cached and shared across
-      // runs (enemy pools, legs viewmodel) — never dispose those.
-      if (m.map && !m.map.isCanvasTexture) continue;
-      if (m.map) m.map.dispose(); // scene-owned canvas texture
-      m.dispose();
-    }
-  });
-  if (root.background && root.background.dispose) root.background.dispose();
-}
-
 function teardownGame() {
   if (!scene) return;
   document.removeEventListener('keydown', onInteractKey);
   onInteractKey = null;
-  interactFn = null;
 
   if (weaponManager) {
     weaponManager.dispose();
@@ -1663,25 +938,20 @@ function teardownGame() {
   for (const bag of sandbags) { scene.remove(bag); disposeSceneAssets(bag); }
   sandbags.length = 0;
   sandbagStock = 0;
-  for (const f of fxList) {
-    scene.remove(f.orb);
-    f.orb.visible = false;
-    orbPool.push(f.orb);
-  }
-  releaseOrbPool();
-  fxList.length = 0;
+  fx.clear(scene);
   machines.length = 0; // meshes die with the old scene
   barriers.length = 0;
   zones.length = 0;
   windows.length = 0;
   wallGuns.length = 0;
   papMachine = null;
+  spawner = null;
 
   // Downed / weather / blood state — the rain mesh and pooled decals live
   // in the old scene; drop our references before the GPU sweep below.
   downed.active = false;
   downed.t = 0;
-  setDownedBar(false);
+  hud.setDownBar(false);
   carpet = null;
   weather.enabled = false;
   weather.rain = null;
@@ -1692,12 +962,10 @@ function teardownGame() {
     bloodDecals.dispose();
     bloodDecals = null;
   }
-  if (dayCycle.sun?.shadow?.map) { dayCycle.sun.shadow.map.dispose(); dayCycle.sun.shadow.map = null; }
+  if (dn.sun?.shadow?.map) { dn.sun.shadow.map.dispose(); dn.sun.shadow.map = null; }
 
   // Light pool slots live in the old scene.
-  lightPool.defs = [];
-  lightPool.slots.length = 0;
-  lightPool.size = -1;
+  lightPoolCtl.reset();
 
   // If the camera is still parented to the world, unhook it.
   camera.removeFromParent();
@@ -1715,9 +983,7 @@ function teardownGame() {
   if (scopeEl) scopeEl.classList.remove('show');
   const crossEl = document.getElementById('crosshair');
   if (crossEl) crossEl.style.display = '';
-  if (hudPrep) hudPrep.textContent = '';
-  if (hudBuffs) hudBuffs.textContent = '';
-  if (compassCtx) compassCtx.clearRect(0, 0, compassEl.width, compassEl.height);
+  hud.clearRun();
   overlay.classList.add('hidden');
   if (document.pointerLockElement) document.exitPointerLock();
 }
@@ -1750,124 +1016,15 @@ overlay.addEventListener('click', (e) => {
 document.getElementById('menuBtn').addEventListener('click', (e) => {
   e.stopPropagation();
   teardownGame();
-  updateMenuMeta();
+  menuStats.updateMenuMeta();
   menuEl.classList.remove('hidden');
 });
-
-// ── Menu meta: XP line + lifetime stats screen ──
-const xpLineEl = document.getElementById('xpLine');
-const statsScreenEl = document.getElementById('statsScreen');
-const statsBodyEl = document.getElementById('statsBody');
-
-function updateMenuMeta() {
-  if (xpLineEl) {
-    xpLineEl.textContent = `⭐ ${totalXp} XP — aksesuarlar XP ile açılır (kill: 10 · headshot: 15 · dalga: 20×N)`;
-  }
-  // Per-map record line: best round across difficulties (with the mode tag).
-  for (const map of MAPS) {
-    const el = document.getElementById(`rec-${map.id}`);
-    if (!el) continue;
-    const entries = Object.entries(stats.bestRuns || {}).filter(([k]) => k.startsWith(`${map.id}:`));
-    if (!entries.length) {
-      el.textContent = 'Henüz kayıt yok';
-      continue;
-    }
-    let best = { round: 0, score: 0, key: '' };
-    for (const [k, v] of entries) {
-      if (v.round > best.round) best = { ...v, key: k.split(':')[1] };
-    }
-    const diff = difficultyByKey(best.key);
-    el.textContent = `🏆 Rekor: ${best.round}. tur · ${best.score} puan (${diff.label})`;
-  }
-}
-
-function showStats() {
-  if (!statsBodyEl || !statsScreenEl) return;
-  const hsPct = stats.kills ? Math.round((stats.headshots / stats.kills) * 100) : 0;
-  const runRows = Object.entries(stats.bestRuns || {}).map(([k, v]) => {
-    const [mapId, dKey] = k.split(':');
-    const map = MAPS.find((m) => m.id === mapId);
-    const diff = difficultyByKey(dKey);
-    return `<div class="statRow"><span>${map ? map.name : mapId} · ${diff.icon} ${diff.label}</span><b>${v.round}. tur · ${v.score} p</b></div>`;
-  }).join('');
-  statsBodyEl.innerHTML = `
-    <div class="statRow"><span>Toplam Kill</span><b>${stats.kills}</b></div>
-    <div class="statRow"><span>Headshot</span><b>${stats.headshots} (%${hsPct})</b></div>
-    <div class="statRow"><span>En İyi Tur</span><b>${stats.bestRound}</b></div>
-    <div class="statRow"><span>En Yüksek Skor</span><b>${stats.bestScore}</b></div>
-    <div class="statRow"><span>Toplam XP</span><b>${totalXp}</b></div>
-    <div class="statRow"><span>Toplam Koşu</span><b>${stats.runs || 0}</b></div>
-    ${runRows}`;
-  statsScreenEl.classList.remove('hidden');
-}
-
-updateMenuMeta();
-
-const statsBtn = document.getElementById('statsBtn');
-if (statsBtn) statsBtn.addEventListener('click', showStats);
-document.getElementById('statsCloseBtn')?.addEventListener('click', () => {
-  statsScreenEl.classList.add('hidden');
-});
-document.getElementById('statsResetBtn')?.addEventListener('click', () => {
-  stats = { kills: 0, headshots: 0, bestRound: 0, bestScore: 0, runs: 0, bestRuns: {} };
-  totalXp = 0;
-  ATTACH_UNLOCKED.clear();
-  for (const [key, meta] of Object.entries(ATTACHMENTS)) {
-    if ((meta.xp || 0) === 0) ATTACH_UNLOCKED.add(key);
-  }
-  savePersisted();
-  updateMenuMeta();
-  showStats();
-});
-
-// ── Pause settings: sensitivity / volume / FOV sliders ──
-const pausePanel = document.getElementById('pauseOptions');
-const optSensEl = document.getElementById('optSens');
-const optVolEl = document.getElementById('optVol');
-const optFovEl = document.getElementById('optFov');
-const optSensVal = document.getElementById('optSensVal');
-const optVolVal = document.getElementById('optVolVal');
-const optFovVal = document.getElementById('optFovVal');
-const optQualityEl = document.getElementById('optQuality');
-const optQualityVal = document.getElementById('optQualityVal');
-
-function syncPauseOptions() {
-  if (!pausePanel) return;
-  optSensEl.value = opts.sens;
-  optVolEl.value = opts.volume;
-  optFovEl.value = opts.fov;
-  optSensVal.textContent = `${Math.round(opts.sens * 100)}%`;
-  optVolVal.textContent = `${Math.round(opts.volume * 100)}%`;
-  optFovVal.textContent = `${Math.round(opts.fov)}°`;
-  const q = qualityByKey(opts.quality);
-  if (optQualityVal) optQualityVal.textContent = q.label;
-  if (optQualityEl) {
-    optQualityEl.querySelectorAll('.qualBtn').forEach((btn) => {
-      btn.classList.toggle('selected', btn.dataset.quality === q.key);
-    });
-  }
-}
-
-if (pausePanel) {
-  optSensEl.addEventListener('input', () => { opts.sens = Number(optSensEl.value); applyOpts(); syncPauseOptions(); saveOpts(); });
-  optVolEl.addEventListener('input', () => { opts.volume = Number(optVolEl.value); applyOpts(); syncPauseOptions(); saveOpts(); });
-  optFovEl.addEventListener('input', () => { opts.fov = Number(optFovEl.value); applyOpts(); syncPauseOptions(); saveOpts(); });
-  optQualityEl?.addEventListener('click', (e) => {
-    const btn = e.target.closest('.qualBtn');
-    if (!btn || !QUALITY_PRESETS[btn.dataset.quality]) return;
-    opts.quality = btn.dataset.quality;
-    applyQuality();
-    syncPauseOptions();
-    saveOpts();
-  });
-}
-syncPauseOptions();
 
 document.addEventListener('pointerlockchange', () => {
   const locked = document.pointerLockElement === canvas;
   if (locked) {
     overlay.classList.add('hidden');
-    endTransition();
+    transition.end();
     // Unlock audio (user gesture) and start the low war ambience.
     weaponManager?.sfx.unlock();
     weaponManager?.sfx.startAmbience();
@@ -1877,11 +1034,11 @@ document.addEventListener('pointerlockchange', () => {
       overlay.querySelector('h1').textContent = 'FPZ';
       overlay.querySelector('p').textContent = 'Duraklatıldı — devam etmek için tıkla.';
       startBtn.textContent = '▶ Devam Et';
-      syncPauseOptions();
-      pausePanel?.classList.remove('hidden');
+      pause.sync();
+      pause.panel?.classList.remove('hidden');
     }
     if (scene) overlay.classList.remove('hidden');
-    if (pendingRestart) pausePanel?.classList.add('hidden');
+    if (pendingRestart) pause.panel?.classList.add('hidden');
     if (weaponManager) weaponManager._firing = false;
   }
 });
@@ -1898,8 +1055,6 @@ window.addEventListener('resize', () => {
 // --- Main loop ---
 /** Headless-test mode: keep ticking without pointer lock (?fpzDebug=1). */
 const DEBUG_UNPAUSED = /[?&]fpzDebug/.test(location.search) || !!window.__fpzDebug;
-const gamepad = new GamepadInput();
-const menuNav = new GamepadMenuNav(gamepad);
 const clock = new THREE.Clock();
 
 // ── Gamepad plug/unplug notifications ──
@@ -1957,7 +1112,7 @@ function animate() {
     controller,
     weaponManager,
     onInteract: () => {
-      if (interactFn && document.pointerLockElement === canvas) interactFn();
+      if (document.pointerLockElement === canvas) interactPrimary();
     },
     onPause: () => {
       if (document.pointerLockElement === canvas) document.exitPointerLock();
@@ -1976,9 +1131,9 @@ function animate() {
 
   controller.update(dt);
   weaponManager.update(dt);
-  updateFx(dt);
+  fx.update(scene, dt);
   applyShadowCadence();
-  updateSunFollow();
+  dayNight.followSun(controller.position, qualityByKey(opts.quality).shadowFollow);
 
   // Flickering bunker lamps (base intensity ~14; flicker around 60-110%)
   for (const pl of flickerLights) {
@@ -1986,7 +1141,7 @@ function animate() {
     pl.intensity = 14 * (0.6 + Math.random() * 0.5 + Math.sin(performance.now() * 0.01 + pl.userData.flickerSeed) * 0.15);
   }
   // Retarget the fixed light pool at the nearest defs (flicker included).
-  refreshLightPool(controller.position);
+  lightPoolCtl.refresh(controller.position);
 
   const now = performance.now();
   drawCompass();
@@ -2006,51 +1161,10 @@ function animate() {
   // ── Day/night + weather ── outdoor maps run a full sun arc (a day passes
   // every DAY_CYCLE_LEN seconds); indoor maps keep the old breathing. The
   // rain column, fog squeeze and lightning flash ride the weather state.
-  dayCycle.t += dt;
-  let dayK;
-  if (dayCycle.mode === 'cycle' && dayCycle.sun) {
-    dayPhase = (dayPhase + dt / DAY_CYCLE_LEN) % 1;
-    const elev = Math.sin(dayPhase * Math.PI * 2); // +1 noon … -1 midnight
-    dayK = THREE.MathUtils.clamp(elev * 1.15 + 0.22, 0.12, 1); // moonlit floor
-    if (dayCycle.sun) dayCycle.sun.intensity = dayCycle.sunBase;
-    if (dayCycle.hemi) dayCycle.hemi.intensity = dayCycle.hemiBase * dayK;
-    if (dayCycle.ambient) dayCycle.ambient.intensity = dayCycle.ambBase * (0.55 + 0.45 * dayK);
-  } else {
-    dayK = 0.72 + 0.28 * Math.sin(dayCycle.t * 0.03);
-    if (dayCycle.sun) dayCycle.sun.intensity = dayCycle.sunBase * dayK;
-    if (dayCycle.hemi) dayCycle.hemi.intensity = dayCycle.hemiBase * dayK;
-    if (dayCycle.ambient) dayCycle.ambient.intensity = dayCycle.ambBase * (0.85 + 0.15 * dayK);
-  }
+  dayNight.update(dt);
   if (weather.enabled) {
-    const wi = weatherIntensity(weather.state);
-    if (weather.rain) {
-      weather.rain.points.visible = wi > 0;
-      if (wi > 0) weather.rain.update(dt, controller.position.x, controller.position.z);
-    }
-    if (weather.fog && scene.fog) {
-      // wet air: sightlines collapse toward the fog centre
-      const farT = weather.fog.far * (wi > 0 ? (weather.state === 'storm' ? 0.45 : 0.65) : 1);
-      const nearT = weather.fog.near * (wi > 0 ? 0.6 : 1);
-      scene.fog.far = THREE.MathUtils.lerp(scene.fog.far, farT, Math.min(1, dt * 1.2));
-      scene.fog.near = THREE.MathUtils.lerp(scene.fog.near, nearT, Math.min(1, dt * 1.2));
-    }
-    weaponManager.sfx.setRain(wi * 0.85);
-    if (weather.state === 'storm') {
-      weather.boltT -= dt;
-      if (weather.boltT <= 0) {
-        weather.flashT = 0.18;
-        weather.boltT = lightningDelay('storm');
-        weaponManager.sfx.thunder();
-      }
-    }
-    if (weather.flashT > 0) {
-      weather.flashT -= dt;
-      const f = Math.max(0, weather.flashT / 0.18);
-      const boost = 1 + f * 3;
-      if (dayCycle.sun) dayCycle.sun.intensity *= boost;
-      if (dayCycle.hemi) dayCycle.hemi.intensity *= boost;
-      if (dayCycle.ambient) dayCycle.ambient.intensity *= boost;
-    }
+    const flash = driveWeather(weather, scene, weaponManager.sfx, dt, controller.position);
+    if (flash > 0) dayNight.flash(flash);
   }
 
   // ── Carpet bombing: bombs land on a fixed cadence over ~2 seconds ──
@@ -2079,20 +1193,19 @@ function animate() {
   // ── Bleed-out clock (downed): ticks down, kills push it back up ──
   if (downed.active) {
     downed.t -= dt;
-    if (downBarFill) downBarFill.style.width = `${Math.round(downedBar(downed.t) * 100)}%`;
+    hud.setDownFrac(downedBar(downed.t));
     if (downed.t <= 0) gameOver();
   }
-
 
   // Prep phase countdown (build / heal time between waves).
   if (waveState === 'prep') {
     prepTimer -= dt;
-    if (hudPrep) hudPrep.textContent = `SONRAKİ DALGA: ${Math.max(1, Math.ceil(prepTimer))}`;
+    hud.setPrep(`SONRAKİ DALGA: ${Math.max(1, Math.ceil(prepTimer))}`);
     // Spend the quiet frames pre-building pooled zombie bodies so the wave
     // spawn tick never pays model/material costs mid-fight.
     Enemy.prewarm(2);
     if (prepTimer <= 0) {
-      if (hudPrep) hudPrep.textContent = '';
+      hud.setPrep('');
       spawnWave();
       updateHUD();
     }
@@ -2185,8 +1298,8 @@ function animate() {
           gamepad.rumble(0.5, 0.8, 250);
           addXp(20 * round);
           if (round > stats.bestRound) stats.bestRound = round;
-          recordBestRun();
-          savePersisted();
+          recordBestRun(setup.mapId, difficulty.key, round, score);
+          saveProgress();
           round++;
           updateHUD();
           startPrep(8);
@@ -2254,76 +1367,24 @@ function animate() {
   }
 
   renderWorld();
-  updatePerfHud(dt);
+  perfHud.update(dt);
 }
 
 // ── Perf HUD (F3): fps + draw calls + triangles + live light/shadow counts ──
-const perfHud = {
-  el: null, on: /[?&]fpzPerf/.test(location.search), acc: 0, frames: 0, fps: 0,
-};
-window.addEventListener('keydown', (e) => {
-  if (e.code === 'F3') {
-    e.preventDefault();
-    if (e.shiftKey && scene) dumpSceneBreakdown();
-    else {
-      perfHud.on = !perfHud.on;
-      if (perfHud.el) perfHud.el.style.display = perfHud.on ? 'block' : 'none';
-    }
-  }
+const perfHud = createPerfHud({
+  renderer,
+  getScene: () => scene,
+  getCamera: () => camera,
+  getFrameInfo: () => ({
+    lightsUsed: lightPoolCtl.pool.used.reduce((s, u) => s + u, 0),
+    poolSize: lightPoolCtl.pool.size,
+    poolDefs: lightPoolCtl.pool.defs.length,
+    shadowVis: perfCull.shadowCasters.filter((m) => m.castShadow).length,
+    shadowTotal: perfCull.shadowCasters.length,
+    enemies: enemies.length,
+    qualityLabel: qualityByKey(opts.quality).label,
+  }),
 });
-/** Shift+F3: console breakdown of visible meshes per top-level scene child. */
-function dumpSceneBreakdown() {
-  camera.layers.set(0); // renderWorld leaves layers=1 (viewmodel pass)
-  scene.updateMatrixWorld(true);
-  camera.updateMatrixWorld();
-  const fr = new THREE.Frustum();
-  fr.setFromProjectionMatrix(
-    new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
-  );
-  const rows = [];
-  let enemyVis = 0;
-  for (const child of scene.children) {
-    let vis = 0, tot = 0;
-    child.traverse((o) => {
-      if (!o.isMesh) return;
-      tot++;
-      if (o.visible && o.layers.test(camera.layers) && fr.intersectsObject(o)) vis++;
-    });
-    if (!tot) continue;
-    if (child.userData.isEnemy) enemyVis += vis;
-    rows.push({ obj: child.name || `${child.type}#${child.id}`, meshes: tot, visible: vis });
-  }
-  rows.sort((a, b) => b.visible - a.visible);
-  const visible = rows.reduce((s, r) => s + r.visible, 0);
-  console.log(`%c[fpz perf] ~${visible} visible meshes (×2 shadow/world pass ≈ draw calls), enemies: ${enemyVis}`, 'color:#8f8;font-weight:bold');
-  console.table(rows.slice(0, 25));
-}
-function updatePerfHud(dt) {
-  if (!perfHud.on) return;
-  perfHud.acc += dt;
-  perfHud.frames++;
-  if (perfHud.acc >= 0.5) {
-    perfHud.fps = Math.round(perfHud.frames / perfHud.acc);
-    perfHud.acc = 0;
-    perfHud.frames = 0;
-    if (!perfHud.el) {
-      perfHud.el = document.createElement('div');
-      perfHud.el.style.cssText =
-        'position:fixed;top:8px;left:8px;z-index:9999;padding:6px 10px;' +
-        'background:rgba(0,0,0,.65);color:#8f8;font:12px/1.5 monospace;' +
-        'pointer-events:none;white-space:pre;border-radius:4px';
-      document.body.appendChild(perfHud.el);
-    }
-    const info = renderer.info.render;
-    const visShadowCasters = perfCull.shadowCasters.filter((m) => m.castShadow).length;
-    const visLights = lightPool.used.reduce((s, u) => s + u, 0);
-    perfHud.el.textContent =
-      `FPS ${perfHud.fps}\n` +
-      `draw calls ${info.calls}  tris ${info.triangles}\n` +
-      `lights ${visLights}/${lightPool.size} pool (${lightPool.defs.length} defs)  shadowMESH ${visShadowCasters}/${perfCull.shadowCasters.length}\n` +
-      `enemies ${enemies.length}  gfx ${qualityByKey(opts.quality).label}`;
-  }
-}
 
 animate();
 
@@ -2346,7 +1407,7 @@ window.__fpz = {
       difficulty: difficulty.key,
       downed: downed.active ? Math.round(downed.t * 10) / 10 : 0,
       weather: weather.state,
-      dayPhase: Math.round(dayPhase * 1000) / 1000,
+      dayPhase: Math.round(dn.phase * 1000) / 1000,
       special: weaponManager ? weaponManager.special : null,
       player: controller ? { x: controller.position.x, z: controller.position.z } : null,
     };
