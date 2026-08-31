@@ -111,8 +111,48 @@ export function createHud() {
     if (downBarFill) downBarFill.style.width = `${Math.round(frac * 100)}%`;
   }
 
+  // ── AC-130 gunship CRT feed overlay: green camera-feed chrome with the
+  // loiter timer, belt count and kill tally. Built on first use, removed
+  // again by clearRun so the menu never inherits a stale feed. ──
+  let gsEl = null;
+  const gsRefs = {};
+  function setGunship(view) {
+    if (view && !gsEl) {
+      gsEl = document.createElement('div');
+      gsEl.id = 'gunshipOverlay';
+      const feed = document.createElement('div');
+      feed.className = 'gso-feed';
+      const cross = document.createElement('div');
+      cross.className = 'gso-cross';
+      const mk = (cls, text) => {
+        const el = document.createElement('div');
+        el.className = `gso-tag ${cls}`;
+        el.textContent = text;
+        return el;
+      };
+      gsRefs.time = mk('gso-time', '');
+      gsRefs.ammo = mk('gso-ammo', '');
+      gsRefs.kills = mk('gso-kills', '');
+      gsEl.append(
+        feed, cross,
+        mk('gso-ship', 'SPY-156 · AC-130 "GHOST RYDER"'),
+        gsRefs.time, gsRefs.ammo, gsRefs.kills,
+      );
+      document.body.appendChild(gsEl);
+    }
+    if (!gsEl) return;
+    gsEl.classList.toggle('show', !!view);
+    if (view) {
+      gsRefs.time.textContent = `LOİTER ${view.time.toFixed(1)} sn`;
+      gsRefs.ammo.textContent = `MERMI ${view.ammo}`;
+      gsRefs.kills.textContent = `VURULAN ${view.kills}`;
+    }
+  }
+
   /** Blank every per-run readout (called from teardownGame). */
   function clearRun() {
+    setGunship(null);
+    if (gsEl) { gsEl.remove(); gsEl = null; }
     setPrep('');
     if (hudBuffs) hudBuffs.textContent = '';
     if (abilitiesEl) abilitiesEl.classList.add('hidden');
@@ -190,6 +230,6 @@ export function createHud() {
 
   return {
     update, updateBuffs, setPrep, setDownBar, setDownFrac, clearRun,
-    beginPois, pushPoi, drawCompass, setAbilities,
+    beginPois, pushPoi, drawCompass, setAbilities, setGunship,
   };
 }

@@ -41,6 +41,11 @@ import {
   DRONE_STOCK, DRONE_MAX_CARRIED, DRONE_BLAST_RADIUS, DRONE_BLAST_DAMAGE,
   launchDrone, updateDrones,
 } from './game/drones.js';
+import {
+  GUNSHIP_DURATION, GUNSHIP_AMMO, GUNSHIP_DAMAGE,
+  GUNSHIP_GROUND_BLAST_R, GUNSHIP_GROUND_BLAST_DMG, GUNSHIP_FOV,
+  createGunshipSequence,
+} from './game/gunship.js';
 
 /**
  * main.js
@@ -183,11 +188,19 @@ const ABILITIES = [
   { id: 'drone', icon: '🛸', label: 'KAMİKAZE DRONE', short: 'Drone' },
   { id: 'carpet', icon: '✈️', label: 'HALI BOMBARDIMANI', short: 'Hali' },
   { id: 'maxammo', icon: '📦', label: 'CEPHANE İKMALİ', short: 'Ikmal' },
+  { id: 'gunship', icon: '🛩️', label: 'AC-130 GUNSHIP', short: 'Gunship' },
 ];
-const ABILITY_CAP = { drone: DRONE_MAX_CARRIED, carpet: 2, maxammo: 2 };
+const ABILITY_CAP = { drone: DRONE_MAX_CARRIED, carpet: 2, maxammo: 2, gunship: 1 };
 let abilityIndex = 0;
-const abilityStock = { drone: 0, carpet: 0, maxammo: 0 };
+const abilityStock = { drone: 0, carpet: 0, maxammo: 0, gunship: 0 };
 const drones = []; // live quadrotors — see game/drones.js
+
+// ── AC-130 gunship sequence (game/gunship.js): the camera rides the
+// orbiting spectre for GUNSHIP_DURATION seconds. Outdoor maps only. ──
+let gunship = null;
+let gunshipCamKids = null; // stowed viewmodel while the camera is airborne
+let gunKills = 0;
+let mapOutdoor = true;
 
 // ── Perk machines (CoD zombies style): one of each per map, bought with points ──
 const machines = []; // { mesh, perk, used }
@@ -336,7 +349,7 @@ function updateBuffs(now) {
 /** Hand the live POIs (box, PaP, wall guns, breached barriers) to the
  *  compass ribbon. */
 function drawCompass() {
-  if (!controller) return;
+  if (!controller || gunship) return;
   hud.beginPois();
   if (mysteryBox) hud.pushPoi(mysteryBox.position.x, mysteryBox.position.z, '#ffee58', '?');
   if (papMachine && !papMachine.used) {
@@ -447,6 +460,7 @@ function startPrep(seconds) {
   abilityStock.drone = Math.min(ABILITY_CAP.drone, abilityStock.drone + DRONE_STOCK);
   abilityStock.carpet = Math.min(ABILITY_CAP.carpet, abilityStock.carpet + 1);
   abilityStock.maxammo = Math.min(ABILITY_CAP.maxammo, abilityStock.maxammo + 1);
+  if (mapOutdoor) abilityStock.gunship = Math.min(ABILITY_CAP.gunship, abilityStock.gunship + 1);
   if (weaponManager) {
     weaponManager.noisemakers = 2;
     weaponManager.grenadesReady = Math.max(weaponManager.grenadesReady, 1);
@@ -498,6 +512,14 @@ function cycleAbility() {
 function useAbility() {
   if (!scene || !document.pointerLockElement) return;
   const a = ABILITIES[abilityIndex];
+  if (a.id === 'gunship') {
+    // Air support needs open sky — and an undisrupted gunner.
+    if (!mapOutdoor || gunship || downed.active) {
+      weaponManager.sfx.uiDeny();
+      showToast(!mapOutdoor ? '🛩️ Kapalı alanda gunship çağrılamaz!' : '🛩️ Gunship zaten havada / durumda!');
+      return;
+    }
+  }
   if (abilityStock[a.id] <= 0) {
     weaponManager.sfx.reloadStart(); // dry tin: empty pouch
     showToast(`${a.icon} ${a.label} kalmadı! Dalga arası ikmal gelir.`);
@@ -511,6 +533,8 @@ function useAbility() {
     showToast('🛸 DRONE HAVADA — hedefe kilitlendi!');
   } else if (a.id === 'carpet') {
     startCarpetBombing();
+  } else if (a.id === 'gunship') {
+    startGunship();
   } else {
     weaponManager.fillAllAmmo();
     weaponManager.sfx.powerUp();
@@ -528,6 +552,54 @@ function detonateDrone(pos, hitTarget) {
   showToast(kills
     ? `🛸 ${kills} zombi infilak etti!`
     : hitTarget ? '🛸 Drone hedefe çarptı!' : '🛸 Drone kendini imha etti');
+}
+
+// ── AC-130 gunship: the camera moves into the orbiting spectre's port
+// door for a time-boxed strafing run (game/gunship.js). The infantry
+// viewmodel + legs are stowed until the sequence hands the camera back. ──
+function startGunship() {
+  gunKills = 0;
+  weaponManager._firing = false;
+  weaponManager.setAiming(false);
+  gunshipCamKids = camera.children.splice(0); // stash gun + hands
+  gunship = createGunshipSequence({ scene, camera, controller, gamepad, arenaHalf });
+  gunship.bindInput();
+  if (controller.legs) controller.legs.visible = false;
+  const crossEl = document.getElementById('crosshair');
+  if (crossEl) crossEl.style.display = 'none';
+  const compEl = document.getElementById('compass');
+  if (compEl) compEl.style.display = 'none';
+  camera.fov = GUNSHIP_FOV;
+  camera.updateProjectionMatrix();
+  hud.setGunship({ time: GUNSHIP_DURATION, ammo: GUNSHIP_AMMO, kills: 0 });
+  weaponManager.sfx.bossRoar(); // distant turbo-prop flyover rumble
+  gamepad.rumble(1, 1, 600);
+  showToast(`🛩️ SPY-156 HAVADA! Taramalı senin — ${GUNSHIP_DURATION} saniye`);
+}
+
+function endGunship() {
+  if (!gunship) return;
+  const kills = gunKills;
+  gunship.end();
+  gunship = null;
+  for (const c of gunshipCamKids || []) camera.add(c);
+  gunshipCamKids = null;
+  if (controller) {
+    if (controller.legs) controller.legs.visible = true;
+    controller.mouse.x = 0;
+    controller.mouse.y = 0;
+  }
+  const crossEl = document.getElementById('crosshair');
+  if (crossEl) crossEl.style.display = '';
+  const compEl = document.getElementById('compass');
+  if (compEl) compEl.style.display = '';
+  camera.fov = opts.fov;
+  camera.updateProjectionMatrix();
+  hud.setGunship(null);
+  weaponManager.sfx.powerUp();
+  gamepad.rumble(0.5, 0.7, 200);
+  showToast(`🛩️ GUNSHIP PAKETİ BİTTİ — ${kills} zombi temizlendi`);
+  updateHUD();
 }
 
 // ── E / gamepad-Y interaction chain (perk → PaP → barrier → wall gun →
@@ -747,6 +819,7 @@ function buildGame() {
   const built = createScene(setup.mapId);
   scene = built.scene;
   arenaHalf = built.arenaHalf ?? 45;
+  mapOutdoor = !!built.meta?.outdoor;
   lightPoolCtl.bind(scene);
   lightPoolCtl.pool.defs = built.pointLights || [];
   // Zones & barriers: gated zones stay locked (and spawn-inert) until bought.
@@ -937,7 +1010,12 @@ function buildGame() {
   downed.t = 0;
   hud.setDownBar(false);
   carpet = null;
-  Object.assign(abilityStock, { drone: DRONE_STOCK, carpet: 1, maxammo: 1 });
+  gunship = null;
+  gunshipCamKids = null;
+  gunKills = 0;
+  Object.assign(abilityStock, {
+    drone: DRONE_STOCK, carpet: 1, maxammo: 1, gunship: mapOutdoor ? 1 : 0,
+  });
   abilityIndex = 0;
   drones.length = 0;
 
@@ -1001,6 +1079,15 @@ function teardownGame() {
   if (!scene) return;
   document.removeEventListener('keydown', onInteractKey);
   onInteractKey = null;
+
+  // Mid-flight teardown: drop the spectre and free the stowed viewmodel —
+  // the stash is detached from the camera, so the sweep below can't see it.
+  if (gunship) {
+    gunship.end();
+    gunship = null;
+    for (const c of gunshipCamKids || []) disposeSceneAssets(c);
+    gunshipCamKids = null;
+  }
 
   if (weaponManager) {
     weaponManager.dispose();
@@ -1203,7 +1290,9 @@ function animate() {
   // (and restarts a finished run), so a controller can drive everything.
   gamepad.update(dt, {
     controller,
-    weaponManager,
+    // While airborne in the spectre the rifle is hands-off: the gunship
+    // sequence reads the gamepad directly (RT fires the gatling).
+    weaponManager: gunship ? null : weaponManager,
     onInteract: () => {
       if (document.pointerLockElement === canvas) interactPrimary();
     },
@@ -1228,7 +1317,10 @@ function animate() {
     return;
   }
 
-  controller.update(dt);
+  // The gunner owns the camera while the spectre flies — the FPS
+  // controller stays parked (player holds position, viewmodel stowed).
+  if (!gunship) controller.update(dt);
+  else weaponManager._firing = false;
   weaponManager.update(dt);
   fx.update(scene, dt);
   applyShadowCadence();
@@ -1442,8 +1534,9 @@ function animate() {
         weaponManager.setTargets(enemies.filter((e) => e.alive && !e.dying).map((e) => e.group));
       }
     }
-    if (dmg > 0) {
+    if (dmg > 0 && !gunship) {
       // Hit feedback: camera flinch + red vignette flash
+      // (the gunner is out of reach — bites on the parked body are ignored)
       controller.addHitFlinch();
       const dmgEl = document.getElementById('damage');
       if (dmgEl) {
@@ -1474,6 +1567,28 @@ function animate() {
         }
       }
     }
+  }
+
+  // ── AC-130 gunship sequence: camera on the orbit, belt feeding, tracers ──
+  if (gunship) {
+    const res = gunship.update(dt, {
+      enemies,
+      onShot: () => weaponManager.sfx.shoot('LSW'),
+      onEnemyShot: (enemy) => {
+        weaponManager.sfx.enemyHit();
+        if (enemy.takeDamage(GUNSHIP_DAMAGE)) {
+          gunKills++;
+          killCredit(enemy);
+          weaponManager.setTargets(enemies.filter((e) => e.alive && !e.dying).map((e) => e.group));
+        }
+      },
+      onGroundHit: (point) => {
+        fx.spawn(scene, null, point, false, 0xffb066);
+        gunKills += blastEnemies(point, GUNSHIP_GROUND_BLAST_R, GUNSHIP_GROUND_BLAST_DMG);
+      },
+    });
+    hud.setGunship({ time: gunship.time, ammo: gunship.ammo, kills: gunKills });
+    if (res === 'ended') endGunship();
   }
 
   renderWorld();
@@ -1518,6 +1633,9 @@ window.__fpz = {
       downed: downed.active ? Math.round(downed.t * 10) / 10 : 0,
       weather: weather.state,
       drones: { stock: abilityStock.drone, live: drones.length },
+      gunship: gunship
+        ? { time: Math.round(gunship.time * 10) / 10, ammo: gunship.ammo, kills: gunKills }
+        : null,
       ability: ABILITIES[abilityIndex].id,
       dayPhase: Math.round(dn.phase * 1000) / 1000,
       special: weaponManager ? weaponManager.special : null,
@@ -1560,6 +1678,14 @@ window.__fpz = {
   },
   goDowned() {
     if (scene && controller && !downed.active && !pendingRestart) beginDowned();
+  },
+  // Call in the AC-130 regardless of stock (debug / smoke tests).
+  callGunship() {
+    if (scene && controller && !gunship && !downed.active && !pendingRestart && mapOutdoor) {
+      abilityStock.gunship = 1;
+      startGunship();
+      updateHUD();
+    }
   },
   fireOnce() {
     weaponManager?._tryShoot();

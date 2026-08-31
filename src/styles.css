@@ -435,6 +435,51 @@
       transform: translate(-50%, -50%);
     }
 
+    /* AC-130 gunship CRT feed (shown during the gunship sequence) */
+    #gunshipOverlay {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 11;
+      display: none;
+      color: #8dffb4;
+      font: 700 14px/1.4 monospace;
+      text-shadow: 0 0 6px rgba(60, 255, 140, 0.7);
+    }
+    #gunshipOverlay.show { display: block; }
+    #gunshipOverlay .gso-feed {
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(circle at 50% 50%,
+          rgba(80, 255, 150, 0.05) 0 32%, rgba(0, 40, 18, 0.25) 62%, rgba(0, 12, 6, 0.85) 100%),
+        repeating-linear-gradient(0deg,
+          rgba(90, 255, 160, 0.05) 0 2px, rgba(0, 0, 0, 0.08) 2px 4px);
+      box-shadow: inset 0 0 160px rgba(0, 60, 25, 0.55);
+    }
+    #gunshipOverlay .gso-cross {
+      position: absolute;
+      left: 50%; top: 50%;
+      width: 64px; height: 64px;
+      transform: translate(-50%, -50%);
+      border: 1px solid rgba(140, 255, 180, 0.85);
+      border-radius: 50%;
+    }
+    #gunshipOverlay .gso-cross::before,
+    #gunshipOverlay .gso-cross::after {
+      content: "";
+      position: absolute;
+      left: 50%; top: 50%;
+      background: rgba(140, 255, 180, 0.85);
+    }
+    #gunshipOverlay .gso-cross::before { width: 16px; height: 1px; transform: translate(-50%, -50%); }
+    #gunshipOverlay .gso-cross::after  { width: 1px; height: 16px; transform: translate(-50%, -50%); }
+    #gunshipOverlay .gso-tag { position: absolute; letter-spacing: 2px; }
+    #gunshipOverlay .gso-ship  { top: 14px; left: 18px; }
+    #gunshipOverlay .gso-time  { top: 14px; right: 18px; font-size: 18px; }
+    #gunshipOverlay .gso-ammo  { bottom: 16px; left: 18px; }
+    #gunshipOverlay .gso-kills { bottom: 16px; right: 18px; }
+
     /* Start / pause overlay */
     #overlay {
       position: fixed;
