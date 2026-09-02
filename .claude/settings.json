@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sed -i 's/\\\\.connect\\(this\\\\.master\\)/.connect\\(this.busSfx\\)/g' src/sfx/Sound.js && grep -c \"connect\\(this.busSfx\\)\" src/sfx/Sound.js)",
+      "Bash(node --test)"
+    ],
+    "additionalDirectories": [
+      "/home/kadir/Projects/fpz/src/sfx"
+    ]
+  }
+}

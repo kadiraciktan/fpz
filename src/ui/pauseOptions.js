@@ -1,31 +1,39 @@
 /**
  * ui/pauseOptions.js
- * Pause-menu settings: sensitivity / volume / FOV sliders + quality
- * buttons. The opts object is mutated in place; callers provide the
- * apply callbacks so this module stays free of game/engine references.
+ * Pause-menu settings: sensitivity / volume (master + category mix) / FOV
+ * sliders + quality buttons. The opts object is mutated in place; callers
+ * provide the apply callbacks so this module stays free of game/engine
+ * references.
  */
 
 import { QUALITY_PRESETS, qualityByKey } from '../game/perf.js';
 
+/** opts key → { slider, value, label, suffix } for the range rows. */
+const RANGE_ROWS = [
+  { key: 'sens', el: 'optSens', val: 'optSensVal', scale: 100, suffix: '%' },
+  { key: 'volume', el: 'optVol', val: 'optVolVal', scale: 100, suffix: '%' },
+  { key: 'volSfx', el: 'optVolSfx', val: 'optVolSfxVal', scale: 100, suffix: '%' },
+  { key: 'volMusic', el: 'optVolMusic', val: 'optVolMusicVal', scale: 100, suffix: '%' },
+  { key: 'volAmb', el: 'optVolAmb', val: 'optVolAmbVal', scale: 100, suffix: '%' },
+  { key: 'fov', el: 'optFov', val: 'optFovVal', scale: 1, suffix: '°' },
+];
+
 export function createPauseOptions(opts, { applyOpts, applyQuality, saveOpts }) {
   const panel = document.getElementById('pauseOptions');
-  const optSensEl = document.getElementById('optSens');
-  const optVolEl = document.getElementById('optVol');
-  const optFovEl = document.getElementById('optFov');
-  const optSensVal = document.getElementById('optSensVal');
-  const optVolVal = document.getElementById('optVolVal');
-  const optFovVal = document.getElementById('optFovVal');
+  const rows = RANGE_ROWS.map((r) => ({
+    ...r,
+    input: document.getElementById(r.el),
+    label: document.getElementById(r.val),
+  })).filter((r) => r.input && r.label);
   const optQualityEl = document.getElementById('optQuality');
   const optQualityVal = document.getElementById('optQualityVal');
 
   function sync() {
     if (!panel) return;
-    optSensEl.value = opts.sens;
-    optVolEl.value = opts.volume;
-    optFovEl.value = opts.fov;
-    optSensVal.textContent = `${Math.round(opts.sens * 100)}%`;
-    optVolVal.textContent = `${Math.round(opts.volume * 100)}%`;
-    optFovVal.textContent = `${Math.round(opts.fov)}°`;
+    for (const r of rows) {
+      r.input.value = opts[r.key];
+      r.label.textContent = `${Math.round(opts[r.key] * r.scale)}${r.suffix}`;
+    }
     const q = qualityByKey(opts.quality);
     if (optQualityVal) optQualityVal.textContent = q.label;
     if (optQualityEl) {
@@ -36,9 +44,14 @@ export function createPauseOptions(opts, { applyOpts, applyQuality, saveOpts }) 
   }
 
   if (panel) {
-    optSensEl.addEventListener('input', () => { opts.sens = Number(optSensEl.value); applyOpts(); sync(); saveOpts(); });
-    optVolEl.addEventListener('input', () => { opts.volume = Number(optVolEl.value); applyOpts(); sync(); saveOpts(); });
-    optFovEl.addEventListener('input', () => { opts.fov = Number(optFovEl.value); applyOpts(); sync(); saveOpts(); });
+    for (const r of rows) {
+      r.input.addEventListener('input', () => {
+        opts[r.key] = Number(r.input.value);
+        applyOpts();
+        sync();
+        saveOpts();
+      });
+    }
     optQualityEl?.addEventListener('click', (e) => {
       const btn = e.target.closest('.qualBtn');
       if (!btn || !QUALITY_PRESETS[btn.dataset.quality]) return;

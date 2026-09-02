@@ -15,7 +15,12 @@ export class Sfx {
   constructor() {
     this.ctx = null;
     this.master = null;
+    // Per-category mix buses (all feed master): effects / music / ambience.
+    this.busSfx = null;
+    this.busMusic = null;
+    this.busAmb = null;
     this._volume = 0.5;
+    this._mix = { sfx: 1, music: 1, ambience: 1 };
     this._ambienceNodes = [];
     this._music = null;
   }
@@ -32,6 +37,16 @@ export class Sfx {
     this.master = this.ctx.createGain();
     this.master.gain.value = this._volume ?? 0.5;
     this.master.connect(this.ctx.destination);
+    this.busSfx = this._makeBus(this._mix.sfx);
+    this.busMusic = this._makeBus(this._mix.music);
+    this.busAmb = this._makeBus(this._mix.ambience);
+  }
+
+  _makeBus(vol) {
+    const bus = this.ctx.createGain();
+    bus.gain.value = Math.max(0, Math.min(1, vol ?? 1));
+    bus.connect(this.master);
+    return bus;
   }
 
   _now() {
@@ -42,6 +57,21 @@ export class Sfx {
   setVolume(v) {
     this._volume = Math.max(0, Math.min(1, v));
     if (this.master) this.master.gain.value = this._volume;
+  }
+
+  /**
+   * Per-category mix 0..1 (settings menu): { sfx, music, ambience }.
+   * Effective level of a sound = master × its category bus.
+   */
+  setMix(mix) {
+    for (const key of ['sfx', 'music', 'ambience']) {
+      if (!(key in mix)) continue;
+      this._mix[key] = Math.max(0, Math.min(1, mix[key]));
+    }
+    if (!this.busSfx) return; // unlocked() will apply _mix at creation
+    this.busSfx.gain.value = this._mix.sfx;
+    this.busMusic.gain.value = this._mix.music;
+    this.busAmb.gain.value = this._mix.ambience;
   }
 
   /** Tear down the audio graph when the run ends (a fresh Sfx is built per run). */
@@ -55,6 +85,7 @@ export class Sfx {
       try { this.ctx.close(); } catch { /* ignore */ }
       this.ctx = null;
       this.master = null;
+      this.busSfx = this.busMusic = this.busAmb = null;
     }
   }
 
@@ -70,7 +101,7 @@ export class Sfx {
     const out = this.ctx.createGain();
     out.gain.setValueAtTime(0.0001, t);
     out.gain.linearRampToValueAtTime(0.14, t + 4);
-    out.connect(this.master);
+    out.connect(this.busMusic);
 
     // Continuous minor drone (A1 + E2, detuned saws through a lowpass)
     const droneFilter = this.ctx.createBiquadFilter();
@@ -190,7 +221,7 @@ export class Sfx {
     const g = this.ctx.createGain();
     g.gain.setValueAtTime(0.9, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + p.noise);
-    src.connect(bp).connect(g).connect(this.master);
+    src.connect(bp).connect(g).connect(this.busSfx);
     src.start(t);
     src.stop(t + p.noise + 0.05);
 
@@ -204,7 +235,7 @@ export class Sfx {
     const cg = this.ctx.createGain();
     cg.gain.setValueAtTime(p.crack, t);
     cg.gain.exponentialRampToValueAtTime(0.001, t + 0.02);
-    crack.connect(hp).connect(cg).connect(this.master);
+    crack.connect(hp).connect(cg).connect(this.busSfx);
     crack.start(t);
     crack.stop(t + 0.03);
 
@@ -216,7 +247,7 @@ export class Sfx {
     const og = this.ctx.createGain();
     og.gain.setValueAtTime(0.7, t);
     og.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
-    osc.connect(og).connect(this.master);
+    osc.connect(og).connect(this.busSfx);
     osc.start(t);
     osc.stop(t + 0.2);
 
@@ -231,7 +262,7 @@ export class Sfx {
     const te = t + 0.035;
     tg.gain.setValueAtTime(0.16, te);
     tg.gain.exponentialRampToValueAtTime(0.001, te + p.tail);
-    tail.connect(tlp).connect(tg).connect(this.master);
+    tail.connect(tlp).connect(tg).connect(this.busSfx);
     tail.start(te);
     tail.stop(te + p.tail + 0.02);
   }
@@ -254,7 +285,7 @@ export class Sfx {
     const g = this.ctx.createGain();
     g.gain.setValueAtTime(0.45, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
-    src.connect(lp).connect(g).connect(this.master);
+    src.connect(lp).connect(g).connect(this.busSfx);
     src.start(t);
     src.stop(t + 0.1);
 
@@ -269,7 +300,7 @@ export class Sfx {
     const hg = this.ctx.createGain();
     hg.gain.setValueAtTime(0.18, t + 0.01);
     hg.gain.exponentialRampToValueAtTime(0.001, t + 0.13);
-    hsrc.connect(bp).connect(hg).connect(this.master);
+    hsrc.connect(bp).connect(hg).connect(this.busSfx);
     hsrc.start(t + 0.01);
     hsrc.stop(t + 0.14);
 
@@ -281,7 +312,7 @@ export class Sfx {
     const og = this.ctx.createGain();
     og.gain.setValueAtTime(0.28, t);
     og.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
-    osc.connect(og).connect(this.master);
+    osc.connect(og).connect(this.busSfx);
     osc.start(t);
     osc.stop(t + 0.09);
   }
@@ -313,7 +344,7 @@ export class Sfx {
     const g = this.ctx.createGain();
     g.gain.setValueAtTime(0.5, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
-    osc.connect(g).connect(this.master);
+    osc.connect(g).connect(this.busSfx);
     osc.start(t);
     osc.stop(t + 0.13);
     // Wet splat: short mid-band noise
@@ -333,7 +364,7 @@ export class Sfx {
     const g = this.ctx.createGain();
     g.gain.setValueAtTime(0.65, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
-    osc.connect(g).connect(this.master);
+    osc.connect(g).connect(this.busSfx);
     osc.start(t);
     osc.stop(t + 0.32);
     // Guttural groan layered under the thud
@@ -347,7 +378,7 @@ export class Sfx {
     const gg = this.ctx.createGain();
     gg.gain.setValueAtTime(0.18, t + 0.02);
     gg.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
-    groan.connect(lp).connect(gg).connect(this.master);
+    groan.connect(lp).connect(gg).connect(this.busSfx);
     groan.start(t + 0.02);
     groan.stop(t + 0.42);
     this._clack(t, 500, 0.09, 0.55);
@@ -367,7 +398,7 @@ export class Sfx {
     const g = this.ctx.createGain();
     g.gain.setValueAtTime(0.35, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
-    osc.connect(lp).connect(g).connect(this.master);
+    osc.connect(lp).connect(g).connect(this.busSfx);
     osc.start(t);
     osc.stop(t + 0.15);
     // Ringing ear
@@ -377,7 +408,7 @@ export class Sfx {
     const rg = this.ctx.createGain();
     rg.gain.setValueAtTime(0.08, t);
     rg.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
-    ring.connect(rg).connect(this.master);
+    ring.connect(rg).connect(this.busSfx);
     ring.start(t);
     ring.stop(t + 0.36);
   }
@@ -393,7 +424,7 @@ export class Sfx {
     const g = this.ctx.createGain();
     g.gain.setValueAtTime(0.3, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
-    osc.connect(g).connect(this.master);
+    osc.connect(g).connect(this.busSfx);
     osc.start(t);
     osc.stop(t + 0.2);
   }
@@ -416,7 +447,7 @@ export class Sfx {
     lp.frequency.value = 300;
     const g = this.ctx.createGain();
     g.gain.value = 0.06;
-    src.connect(lp).connect(g).connect(this.master);
+    src.connect(lp).connect(g).connect(this.busAmb);
     src.start(t);
     this._ambienceNodes.push(src, lp, g);
 
@@ -431,7 +462,7 @@ export class Sfx {
     const lfoGain = this.ctx.createGain();
     lfoGain.gain.value = 0.03;
     lfo.connect(lfoGain).connect(og.gain);
-    osc.connect(og).connect(this.master);
+    osc.connect(og).connect(this.busAmb);
     osc.start(t);
     lfo.start(t);
     this._ambienceNodes.push(osc, og, lfo, lfoGain);
@@ -473,12 +504,12 @@ export class Sfx {
    * StereoPannerNode is near-universal but degrade gracefully without it.
    */
   _panner(pan = 0) {
-    if (!this.ctx) return this.master;
+    if (!this.ctx || !this.busSfx) return this.master;
     const p = Math.max(-1, Math.min(1, pan || 0));
-    if (!p || !this.ctx.createStereoPanner) return this.master;
+    if (!p || !this.ctx.createStereoPanner) return this.busSfx;
     const node = this.ctx.createStereoPanner();
     node.pan.value = p;
-    node.connect(this.master);
+    node.connect(this.busSfx);
     return node;
   }
 
@@ -498,7 +529,7 @@ export class Sfx {
     const g = this.ctx.createGain();
     g.gain.setValueAtTime(0.28, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.6);
-    osc.connect(bp).connect(g).connect(this.master);
+    osc.connect(bp).connect(g).connect(this.busSfx);
     osc.start(t);
     osc.stop(t + 0.65);
     this.zombieGrowl(0.22);
@@ -547,7 +578,7 @@ export class Sfx {
     const g = this.ctx.createGain();
     g.gain.setValueAtTime(1.0, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.55);
-    src.connect(lp).connect(g).connect(this.master);
+    src.connect(lp).connect(g).connect(this.busSfx);
     src.start(t);
     src.stop(t + 0.6);
     // Sub-bass chest punch
@@ -558,7 +589,7 @@ export class Sfx {
     const og = this.ctx.createGain();
     og.gain.setValueAtTime(0.9, t);
     og.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
-    osc.connect(og).connect(this.master);
+    osc.connect(og).connect(this.busSfx);
     osc.start(t);
     osc.stop(t + 0.45);
     // Debris crackle tail
@@ -582,7 +613,7 @@ export class Sfx {
     const g = this.ctx.createGain();
     g.gain.setValueAtTime(0.4, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
-    osc.connect(bp).connect(g).connect(this.master);
+    osc.connect(bp).connect(g).connect(this.busSfx);
     osc.start(t);
     osc.stop(t + 0.22);
     // Bright crackle layer
@@ -623,7 +654,7 @@ export class Sfx {
     const g = this.ctx.createGain();
     g.gain.setValueAtTime(0.4, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
-    src.connect(bp).connect(g).connect(this.master);
+    src.connect(bp).connect(g).connect(this.busSfx);
     src.start(t);
     src.stop(t + 0.24);
   }
@@ -644,7 +675,7 @@ export class Sfx {
     g.gain.setValueAtTime(0.001, t);
     g.gain.exponentialRampToValueAtTime(0.5, t + 0.12);
     g.gain.exponentialRampToValueAtTime(0.001, t + 1.2);
-    osc.connect(lp).connect(g).connect(this.master);
+    osc.connect(lp).connect(g).connect(this.busSfx);
     osc.start(t);
     osc.stop(t + 1.25);
     // Sub-bass chest rumble under the bellow
@@ -655,7 +686,7 @@ export class Sfx {
     const sg = this.ctx.createGain();
     sg.gain.setValueAtTime(0.4, t);
     sg.gain.exponentialRampToValueAtTime(0.001, t + 1.1);
-    sub.connect(sg).connect(this.master);
+    sub.connect(sg).connect(this.busSfx);
     sub.start(t);
     sub.stop(t + 1.15);
   }
@@ -674,7 +705,7 @@ export class Sfx {
     const g = this.ctx.createGain();
     g.gain.setValueAtTime(0.55, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + 1.2);
-    src.connect(lp).connect(g).connect(this.master);
+    src.connect(lp).connect(g).connect(this.busAmb);
     src.start(t);
     src.stop(t + 1.25);
     this._clack(t, 2500, 0.08, 0.3);
@@ -696,7 +727,7 @@ export class Sfx {
       bp.Q.value = 0.4;
       const g = this.ctx.createGain();
       g.gain.value = 0;
-      src.connect(bp).connect(g).connect(this.master);
+      src.connect(bp).connect(g).connect(this.busAmb);
       src.start();
       this._rain = { src, g };
       this._ambienceNodes.push(src);
@@ -723,7 +754,7 @@ export class Sfx {
     g.gain.setValueAtTime(0.001, t);
     g.gain.exponentialRampToValueAtTime(0.35, t + 0.05);
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.17);
-    src.connect(bp).connect(g).connect(this.master);
+    src.connect(bp).connect(g).connect(this.busSfx);
     src.start(t);
     src.stop(t + 0.2);
   }
@@ -740,7 +771,7 @@ export class Sfx {
       const g = this.ctx.createGain();
       g.gain.setValueAtTime(vol, t + off);
       g.gain.exponentialRampToValueAtTime(0.001, t + off + 0.12);
-      osc.connect(g).connect(this.master);
+      osc.connect(g).connect(this.busSfx);
       osc.start(t + off);
       osc.stop(t + off + 0.14);
     }
@@ -771,7 +802,7 @@ export class Sfx {
     g.gain.setValueAtTime(0.001, t);
     g.gain.linearRampToValueAtTime(0.14, t + 0.03);
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
-    src.connect(lp).connect(g).connect(this.master);
+    src.connect(lp).connect(g).connect(this.busSfx);
     src.start(t);
     src.stop(t + 0.16);
     this._clack(t + 0.02, 1300, 0.05, 0.3);
@@ -796,7 +827,7 @@ export class Sfx {
       const g = this.ctx.createGain();
       g.gain.setValueAtTime(0.16, t + off);
       g.gain.exponentialRampToValueAtTime(0.001, t + off + 0.09);
-      osc.connect(g).connect(this.master);
+      osc.connect(g).connect(this.busSfx);
       osc.start(t + off);
       osc.stop(t + off + 0.1);
     }
@@ -817,7 +848,7 @@ export class Sfx {
     const g = this.ctx.createGain();
     g.gain.setValueAtTime(0.2, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
-    osc.connect(lp).connect(g).connect(this.master);
+    osc.connect(lp).connect(g).connect(this.busSfx);
     osc.start(t);
     osc.stop(t + 0.16);
   }
@@ -834,7 +865,7 @@ export class Sfx {
     const g = this.ctx.createGain();
     g.gain.setValueAtTime(vol, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + dur);
-    src.connect(bp).connect(g).connect(this.master);
+    src.connect(bp).connect(g).connect(this.busSfx);
     src.start(t);
     src.stop(t + dur + 0.02);
   }

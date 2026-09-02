@@ -266,7 +266,8 @@ const fx = createFx();
 
 // ── Player settings (pause menu): sensitivity / volume / FOV / quality ──
 const OPTS_KEY = 'zombieFront.opts';
-const opts = { sens: 1, volume: 0.5, fov: 75, quality: 'med' };
+// volSfx/volMusic/volAmb are per-category mix levels; `volume` is the master.
+const opts = { sens: 1, volume: 0.5, volSfx: 1, volMusic: 0.9, volAmb: 0.8, fov: 75, quality: 'med' };
 
 function loadOpts() {
   try {
@@ -279,12 +280,19 @@ function saveOpts() {
   try { localStorage.setItem(OPTS_KEY, JSON.stringify(opts)); } catch { /* ignore */ }
 }
 
+/** Push master + per-category audio levels into a (fresh or live) Sfx. */
+function applyAudioOpts(sfx) {
+  if (!sfx) return;
+  sfx.setVolume(opts.volume);
+  sfx.setMix({ sfx: opts.volSfx, music: opts.volMusic, ambience: opts.volAmb });
+}
+
 /** Push the settings into controller / audio / camera. Safe any time. */
 function applyOpts() {
   if (controller) controller.params.mouseSensitivity = 0.002 * opts.sens;
   if (weaponManager) {
     weaponManager.hipFov = opts.fov;
-    weaponManager.sfx.setVolume(opts.volume);
+    applyAudioOpts(weaponManager.sfx);
   }
   if (Math.abs(camera.fov - opts.fov) > 0.01 && !document.pointerLockElement) {
     camera.fov = opts.fov;
@@ -1120,7 +1128,7 @@ function buildGame() {
     },
   }, setup.attachments, setup.skins, setup.loadout);
   weaponManager.hipFov = opts.fov;
-  weaponManager.sfx.setVolume(opts.volume);
+  applyAudioOpts(weaponManager.sfx);
   weaponManager.setTargets(built.targets);
 
   // --- Wall weapon: Thompson (E to grab, costs 1500) ---
