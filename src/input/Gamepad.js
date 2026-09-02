@@ -172,7 +172,7 @@ export class GamepadMenuNav {
 
   /** Topmost visible screen, or null when the game itself is up. */
   _scope() {
-    for (const id of ['statsScreen', 'gunsmithScreen', 'mainMenu']) {
+    for (const id of ['storyScreen', 'statsScreen', 'gunsmithScreen', 'mainMenu']) {
       const el = document.getElementById(id);
       if (el && !el.classList.contains('hidden') && el.offsetParent !== null) return el;
     }

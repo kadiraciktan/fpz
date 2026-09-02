@@ -100,6 +100,15 @@ export function createHud() {
     if (hudPrep) hudPrep.textContent = text;
   }
 
+  // ── Mission objective strip (top-left, mission mode only) ──
+  const hudObjective = document.getElementById('objective');
+  function setObjective(text) {
+    if (!hudObjective) return;
+    const on = !!text;
+    hudObjective.classList.toggle('hidden', !on);
+    if (on && hudObjective.textContent !== text) hudObjective.textContent = text;
+  }
+
   // ── Bleed-out bar (downed / last stand) ──
   function setDownBar(visible, frac = 1) {
     if (!downBarWrap || !downBarFill) return;
@@ -154,6 +163,7 @@ export function createHud() {
     setGunship(null);
     if (gsEl) { gsEl.remove(); gsEl = null; }
     setPrep('');
+    setObjective('');
     if (hudBuffs) hudBuffs.textContent = '';
     if (abilitiesEl) abilitiesEl.classList.add('hidden');
     if (compassCtx) compassCtx.clearRect(0, 0, compassEl.width, compassEl.height);
@@ -229,7 +239,7 @@ export function createHud() {
   const _fwdV = new THREE.Vector3();
 
   return {
-    update, updateBuffs, setPrep, setDownBar, setDownFrac, clearRun,
+    update, updateBuffs, setPrep, setObjective, setDownBar, setDownFrac, clearRun,
     beginPois, pushPoi, drawCompass, setAbilities, setGunship,
   };
 }

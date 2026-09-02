@@ -30,6 +30,7 @@
       <div id="downBarOuter"><div id="downBar"></div></div>
     </div>
     <canvas id="compass" width="420" height="40"></canvas>
+    <div id="objective" class="hidden"></div>
   </div>
 
   <div id="scopeOverlay"></div>
@@ -39,6 +40,16 @@
     <div class="subtitle">First Person <b>Zombies</b> — Seç &amp; Savaş</div>
 
     <div class="menuSection">
+      <h2>Mod</h2>
+      <div class="modeRow" id="modeRow"></div>
+    </div>
+
+    <div class="menuSection hidden" id="missionSection">
+      <h2>Operasyonlar — SON NEFES</h2>
+      <div class="mapCards" id="missionCards"></div>
+    </div>
+
+    <div class="menuSection" id="mapSection">
       <h2>Harita Seç</h2>
       <div class="mapCards" id="mapCards"></div>
     </div>
@@ -108,6 +119,19 @@
     <div id="trStatus">HARİTA YÜKLENİYOR...</div>
     <div class="trBar"><div id="trBarFill"></div></div>
     <div id="trHint"></div>
+  </div>
+
+  <div id="storyScreen" class="hidden">
+    <div class="storyPanel">
+      <div class="storyKicker" id="storyKicker"></div>
+      <h2 id="storyTitle"></h2>
+      <div id="storyLines"></div>
+      <div id="storyObjectives"></div>
+      <div class="storyBtnRow">
+        <button id="storyGoBtn">▶ GÖREVE BAŞLA</button>
+        <button id="storyMenuBtn" class="storyMenuBtn">Ana Menü</button>
+      </div>
+    </div>
   </div>
 
   <div id="overlay">

@@ -7,10 +7,13 @@
 import { MAPS } from '../gfx/Scene.js';
 import { ATTACHMENTS, WEAPON_DEFS, DEFAULT_LOADOUT } from '../weapons/defs.js';
 import { DIFFICULTIES } from './zombies.js';
+import { MISSIONS } from './missions.js';
 
 export const setup = {
   mapId: 'street',
   difficulty: 'normal',
+  mode: 'classic', // 'classic' = endless waves, 'mission' = story campaign
+  missionId: MISSIONS[0].id,
   attachments: {},
   skins: {},
 };
@@ -31,6 +34,8 @@ try {
   if (saved) {
     if (MAPS.some((m) => m.id === saved.mapId)) setup.mapId = saved.mapId;
     if (DIFFICULTIES.some((d) => d.key === saved.difficulty)) setup.difficulty = saved.difficulty;
+    if (saved.mode === 'mission') setup.mode = 'mission';
+    if (MISSIONS.some((m) => m.id === saved.missionId)) setup.missionId = saved.missionId;
     for (const [w, v] of Object.entries(saved.attachments || {})) {
       if (setup.attachments[w]) Object.assign(setup.attachments[w], v);
     }

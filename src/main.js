@@ -29,7 +29,14 @@ import { createHud } from './ui/hud.js';
 import { createScorePopups } from './ui/scorePopups.js';
 import { createPerfHud } from './ui/perfHud.js';
 import { setup, saveSetup } from './game/setup.js';
-import { totalXp, stats, loadProgress, saveProgress, addXp, recordBestRun } from './game/progress.js';
+import { totalXp, stats, loadProgress, saveProgress, addXp, recordBestRun, completeMission } from './game/progress.js';
+import {
+  getMission, createMissionRun, currentObjective, isMissionDone,
+  objectiveHudText, noteKill, noteRoundCleared, noteHold, noteInteract,
+  nextMission, INTERACT_RADIUS,
+} from './game/missions.js';
+import { createMissionMenu } from './ui/missionsMenu.js';
+import { createStoryScreen } from './ui/story.js';
 import { PERKS } from './game/perks.js';
 import { powerUpType, spawnPowerUp } from './game/powerups.js';
 import { createFx } from './game/fx.js';
@@ -98,14 +105,31 @@ loadProgress(); // XP / lifetime stats (live bindings in game/progress.js)
 createMainMenu(); // map + difficulty cards (selection state in game/setup.js)
 createGunsmithScreen(setup, () => totalXp);
 const menuStats = createMenuStats();
+const missionMenu = createMissionMenu(); // KLASİK / OPERASYON + bölüm kartları
+const story = createStoryScreen(); // briefing / outro radio screens
 
 // ── Deployment transition: menu → game cinematic handoff ──
 const transition = createTransition(() => requestLock());
 
 document.getElementById('startGameBtn').addEventListener('click', () => {
+  if (setup.mode === 'mission') {
+    const m = getMission(setup.missionId);
+    if (m) {
+      saveSetup();
+      story.showBrief(m, () => startRun());
+      return;
+    }
+  }
+  startRun();
+});
+
+/** Deploy into the selected run (classic map, or the mission's own map). */
+function startRun() {
   saveSetup();
-  const map = MAPS.find((m) => m.id === setup.mapId);
-  transition.show(map ? map.name : setup.mapId);
+  const missionDef = setup.mode === 'mission' ? getMission(setup.missionId) : null;
+  const mapId = missionDef ? missionDef.mapId : setup.mapId;
+  const map = MAPS.find((m) => m.id === mapId);
+  transition.show(missionDef ? missionDef.name : (map ? map.name : mapId));
   menuEl.classList.add('hidden');
   transition.later(() => { teardownGame(); buildGame(); }, 80);
   transition.later(() => requestLock(), 1100);
@@ -114,7 +138,14 @@ document.getElementById('startGameBtn').addEventListener('click', () => {
       transition.setHint('▶ Başlamak için ekrana tıkla');
     }
   }, 2000);
-});
+}
+
+/** Bring the main menu back up with fresh records + mission unlocks. */
+function openMenu() {
+  menuStats.updateMenuMeta();
+  missionMenu.update();
+  menuEl.classList.remove('hidden');
+}
 
 // ════════════════════════════ GAME STATE ════════════════════════════
 
@@ -176,6 +207,13 @@ let difficulty = difficultyByKey('normal');
 // ── Wave rhythm: 'prep' (build/heal) then 'active' (fight) ──
 let waveState = 'active';
 let prepTimer = 0;
+
+// ── Mission mode (story campaign, game/missions.js): the active bölüm and
+// its pure objective state machine. Null in classic runs. missionMarker is
+// the in-world ring + label for the current interact/hold objective. ──
+let mission = null;
+let missionRun = null;
+let missionMarker = null;
 
 // ── Player buildables: sandbag walls (B) + noisemakers (G, on WeaponManager) ──
 let sandbagStock = 0;
@@ -356,6 +394,10 @@ function updateBuffs(now) {
 function drawCompass() {
   if (!controller || gunship) return;
   hud.beginPois();
+  if (mission) {
+    const obj = currentObjective(mission, missionRun);
+    if (obj && obj.marker) hud.pushPoi(obj.marker.x, obj.marker.z, '#4fc3f7', '◎');
+  }
   if (mysteryBox) hud.pushPoi(mysteryBox.position.x, mysteryBox.position.z, '#ffee58', '?');
   if (papMachine && !papMachine.used) {
     hud.pushPoi(papMachine.mesh.position.x, papMachine.mesh.position.z, '#ce93d8', 'P');
@@ -376,7 +418,9 @@ function drawCompass() {
 function spawnWave() {
   waveState = 'active';
   weaponManager.sfx.setMusicIntensity(waveIntensity(round));
-  const boss = isBossRound(round);
+  // Mission 'killBoss' objectives call in the boss on the next wave.
+  const boss = isBossRound(round)
+    || (mission && currentObjective(mission, missionRun)?.type === 'killBoss');
   const sprint = isSprintRound(round);
   const crabs = isHeadcrabRound(round);
   gamepad.rumble(0.4, 0.6, 220);
@@ -674,6 +718,7 @@ function applyPowerUp(key) {
       if (round > stats.bestRound) stats.bestRound = round;
       recordBestRun(setup.mapId, difficulty.key, round, score);
       saveProgress();
+      feedMissionRoundCleared();
       round++;
       startPrep(8);
       if (downed.active) standUp();
@@ -706,6 +751,7 @@ function killCredit(enemy, isHeadshot = false) {
   stats.kills++;
   if (isHeadshot) stats.headshots++;
   if (stats.kills % 5 === 0) saveProgress();
+  if (mission) feedMissionKill(enemy.type);
   weaponManager.sfx.enemyDeath();
   if (enemy.type === 'headcrab') weaponManager.sfx.headcrabChirp(0.3);
   else weaponManager.sfx.zombieScream();
@@ -819,10 +865,143 @@ function audioPan(worldPos) {
   return THREE.MathUtils.clamp(_toV.x * -_fwdV.z + _toV.z * _fwdV.x, -1, 1);
 }
 
+// ════════════════════ MISSION OBJECTIVES (mission mode) ════════════════════
+// game/missions.js owns the pure state machine; main only feeds events and
+// paints the results (HUD strip, compass POI, 3D marker, toasts).
+
+function refreshObjective() {
+  hud.setObjective(
+    mission && missionRun && !missionRun.done ? objectiveHudText(mission, missionRun) : ''
+  );
+}
+
+/** Floating title/sub sprite above an objective marker. */
+function makeLabelSprite(title, sub) {
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 128;
+  const ctx = c.getContext('2d');
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = 'bold 46px "Courier New", Courier, monospace';
+  ctx.fillStyle = '#b3e5fc';
+  ctx.fillText(title, 256, sub ? 44 : 64);
+  if (sub) {
+    ctx.font = 'bold 34px "Courier New", Courier, monospace';
+    ctx.fillStyle = '#ffe082';
+    ctx.fillText(sub, 256, 96);
+  }
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: new THREE.CanvasTexture(c), transparent: true, depthWrite: false,
+  }));
+  sprite.scale.set(6.5, 1.6, 1);
+  return sprite;
+}
+
+/** Rebuild the ring + label for the CURRENT objective (interact/hold only). */
+function syncMissionMarker() {
+  removeMissionMarker();
+  if (!scene || !mission) return;
+  const obj = currentObjective(mission, missionRun);
+  if (!obj || !obj.marker || (obj.type !== 'interact' && obj.type !== 'hold')) return;
+  const r = obj.type === 'hold' ? obj.radius : 1.5;
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(Math.max(0.6, r - 0.45), r, 48),
+    new THREE.MeshBasicMaterial({
+      color: obj.type === 'hold' ? 0x4fc3f7 : 0xffe082,
+      transparent: true, opacity: 0.55, side: THREE.DoubleSide, depthWrite: false,
+    })
+  );
+  ring.rotation.x = -Math.PI / 2;
+  const label = makeLabelSprite(obj.marker.title, obj.marker.sub);
+  label.position.y = 2.6;
+  missionMarker = new THREE.Group();
+  missionMarker.add(ring, label);
+  missionMarker.position.set(obj.marker.x, 0.04, obj.marker.z);
+  scene.add(missionMarker);
+}
+
+function removeMissionMarker() {
+  if (!missionMarker) return;
+  if (scene) scene.remove(missionMarker);
+  missionMarker = null; // meshes freed by the scene teardown sweep
+}
+
+/** An objective just flipped in the state machine: celebrate + point ahead. */
+function handleObjectiveDone(obj) {
+  weaponManager.sfx.powerUp();
+  gamepad.rumble(0.7, 0.9, 260);
+  const next = currentObjective(mission, missionRun);
+  showToast(next
+    ? `✔ Hedef tamam → ${next.intro}`
+    : `✔ ${mission.name} — TÜM HEDEFLER TAMAM!`);
+  syncMissionMarker();
+  refreshObjective();
+  if (isMissionDone(missionRun)) finishMission();
+}
+
+/** Outro handoff: record completion, then the next bölüm (or the menu). */
+function finishMission() {
+  const m = mission;
+  completeMission(m.id);
+  addXp(m.rewardXp);
+  saveProgress();
+  showToast(`🏅 BÖLÜM TAMAMLANDI · +${m.rewardXp} XP`);
+  gamepad.rumble(1, 1, 500);
+  refreshObjective();
+  const next = nextMission(m.id);
+  // Let the last kill settle, then cut to the radio-transcript outro.
+  setTimeout(() => {
+    if (mission !== m) return; // player bailed to the menu in the meantime
+    teardownGame();
+    story.showOutro(m, {
+      goLabel: next ? `▶ DEVAM: ${next.name}` : '🏁 ANA MENÜ',
+      onGo: next ? () => { setup.missionId = next.id; startRun(); } : () => openMenu(),
+      onMenu: () => openMenu(),
+    });
+  }, 1500);
+}
+
+function feedMissionKill(enemyType) {
+  const done = noteKill(mission, missionRun, enemyType);
+  if (done) handleObjectiveDone(done);
+  else refreshObjective();
+}
+
+function feedMissionRoundCleared() {
+  if (!mission) return;
+  const done = noteRoundCleared(mission, missionRun);
+  if (done) handleObjectiveDone(done);
+  else refreshObjective();
+}
+
+/** 'hold' objectives tick only while the player stands inside the ring. */
+function tickMissionHold(dt) {
+  const obj = currentObjective(mission, missionRun);
+  if (!obj || obj.type !== 'hold') return;
+  const p = controller.position;
+  const within = Math.hypot(p.x - obj.marker.x, p.z - obj.marker.z) <= obj.radius;
+  const done = noteHold(mission, missionRun, dt, within);
+  if (done) handleObjectiveDone(done);
+  else refreshObjective();
+}
+
+/** E near an 'interact' marker: consume the keypress and finish the step. */
+function tryMissionInteract() {
+  if (!mission || !controller) return false;
+  const obj = currentObjective(mission, missionRun);
+  if (!obj || obj.type !== 'interact') return false;
+  const p = controller.position;
+  if (Math.hypot(p.x - obj.marker.x, p.z - obj.marker.z) > INTERACT_RADIUS) return false;
+  const done = noteInteract(mission, missionRun);
+  if (done) handleObjectiveDone(done);
+  return true;
+}
+
 // ════════════════════════ BUILD / TEARDOWN ════════════════════════
 
 function buildGame() {
-  const built = createScene(setup.mapId);
+  const missionDef = setup.mode === 'mission' ? getMission(setup.missionId) : null;
+  const built = createScene(missionDef ? missionDef.mapId : setup.mapId);
   scene = built.scene;
   arenaHalf = built.arenaHalf ?? 45;
   mapOutdoor = !!built.meta?.outdoor;
@@ -995,6 +1174,7 @@ function buildGame() {
       return;
     }
     if (e.code !== 'KeyE') return;
+    if (tryMissionInteract()) return;
     interactPrimary();
   };
   document.addEventListener('keydown', onInteractKey);
@@ -1025,6 +1205,15 @@ function buildGame() {
   });
   abilityIndex = 0;
   drones.length = 0;
+
+  // Mission mode: fresh objective run + first-goal pointer.
+  mission = missionDef;
+  missionRun = missionDef ? createMissionRun(missionDef) : null;
+  if (mission) {
+    syncMissionMarker();
+    refreshObjective();
+    showToast(`🎖️ ${mission.name} — ${mission.objectives[0].intro}`);
+  }
 
   // Day/night cycle: remember the scene's base light intensities.
   dayNight.configure({
@@ -1086,6 +1275,9 @@ function teardownGame() {
   if (!scene) return;
   document.removeEventListener('keydown', onInteractKey);
   onInteractKey = null;
+  removeMissionMarker();
+  mission = null;
+  missionRun = null;
 
   // Mid-flight teardown: drop the spectre and free the stowed viewmodel —
   // the stash is detached from the camera, so the sweep below can't see it.
@@ -1203,8 +1395,7 @@ overlay.addEventListener('click', (e) => {
 document.getElementById('menuBtn').addEventListener('click', (e) => {
   e.stopPropagation();
   teardownGame();
-  menuStats.updateMenuMeta();
-  menuEl.classList.remove('hidden');
+  openMenu();
 });
 
 document.addEventListener('pointerlockchange', () => {
@@ -1301,7 +1492,7 @@ function animate() {
     // sequence reads the gamepad directly (RT fires the gatling).
     weaponManager: gunship ? null : weaponManager,
     onInteract: () => {
-      if (document.pointerLockElement === canvas) interactPrimary();
+      if (document.pointerLockElement === canvas && !tryMissionInteract()) interactPrimary();
     },
     onAbility: () => {
       if (document.pointerLockElement === canvas) useAbility();
@@ -1363,6 +1554,12 @@ function animate() {
   if (weather.enabled) {
     const flash = driveWeather(weather, scene, weaponManager.sfx, dt, controller.position);
     if (flash > 0) dayNight.flash(flash);
+  }
+
+  // ── Mission mode: hold-zone ticks + the objective marker idles spinning ──
+  if (mission) {
+    tickMissionHold(dt);
+    if (missionMarker) missionMarker.rotation.y += dt * 0.8;
   }
 
   // ── Carpet bombing: bombs land on a fixed cadence over ~2 seconds ──
@@ -1509,6 +1706,7 @@ function animate() {
           if (round > stats.bestRound) stats.bestRound = round;
           recordBestRun(setup.mapId, difficulty.key, round, score);
           saveProgress();
+          feedMissionRoundCleared();
           round++;
           updateHUD();
           startPrep(8);
@@ -1647,6 +1845,15 @@ window.__fpz = {
       ability: ABILITIES[abilityIndex].id,
       dayPhase: Math.round(dn.phase * 1000) / 1000,
       special: weaponManager ? weaponManager.special : null,
+      mission: mission && missionRun
+        ? {
+          id: mission.id,
+          step: missionRun.step,
+          progress: Math.round(missionRun.progress * 10) / 10,
+          objective: currentObjective(mission, missionRun)?.type ?? null,
+          done: missionRun.done,
+        }
+        : null,
       player: controller ? { x: controller.position.x, z: controller.position.z } : null,
     };
   },

@@ -12,7 +12,7 @@ const STATS_KEY = 'zombieFront.stats';
 
 export const ATTACH_UNLOCKED = new Set();
 export let totalXp = 0;
-export let stats = { kills: 0, headshots: 0, bestRound: 0, bestScore: 0, runs: 0, bestRuns: {} };
+export let stats = { kills: 0, headshots: 0, bestRound: 0, bestScore: 0, runs: 0, bestRuns: {}, missions: {} };
 
 export function loadProgress() {
   try {
@@ -54,8 +54,15 @@ export function recordBestRun(mapId, difficultyKey, round, score) {
   };
 }
 
+/** Mark a story bölüm complete (mission mode). */
+export function completeMission(missionId) {
+  stats.missions = stats.missions || {};
+  stats.missions[missionId] = true;
+  saveProgress();
+}
+
 export function resetProgress() {
-  stats = { kills: 0, headshots: 0, bestRound: 0, bestScore: 0, runs: 0, bestRuns: {} };
+  stats = { kills: 0, headshots: 0, bestRound: 0, bestScore: 0, runs: 0, bestRuns: {}, missions: {} };
   totalXp = 0;
   ATTACH_UNLOCKED.clear();
   for (const [key, meta] of Object.entries(ATTACHMENTS)) {

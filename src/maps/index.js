@@ -6,6 +6,10 @@ import { meta as streetMeta, build as buildStreet } from './street.js';
 import { meta as factoryMeta, build as buildFactory } from './factory.js';
 import { meta as bunkerMeta, build as buildBunker } from './bunker.js';
 import { meta as nachtMeta, build as buildNacht } from './nacht.js';
+import { meta as konvoyMeta, build as buildKonvoy } from './konvoy.js';
+import { meta as montajMeta, build as buildMontaj } from './montaj.js';
+import { meta as reaktorMeta, build as buildReaktor } from './reaktor.js';
+import { meta as sunakMeta, build as buildSunak } from './sunak.js';
 
 /**
  * maps/index.js
@@ -14,13 +18,27 @@ import { meta as nachtMeta, build as buildNacht } from './nacht.js';
 
 export { flickerLights };
 
-export const MAPS = [streetMeta, factoryMeta, bunkerMeta, nachtMeta];
+// Mission-only maps stay out of the classic map-select grid (meta.missionOnly).
+export const MAPS = [
+  streetMeta,
+  factoryMeta,
+  bunkerMeta,
+  nachtMeta,
+  konvoyMeta,
+  montajMeta,
+  reaktorMeta,
+  sunakMeta,
+];
 
 const BUILDERS = {
   street: buildStreet,
   factory: buildFactory,
   bunker: buildBunker,
   nacht: buildNacht,
+  konvoy: buildKonvoy,
+  montaj: buildMontaj,
+  reaktor: buildReaktor,
+  sunak: buildSunak,
 };
 
 const META_BY_ID = Object.fromEntries(MAPS.map((m) => [m.id, m]));

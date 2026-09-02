@@ -12,8 +12,9 @@ export function createMainMenu() {
   const mapCardsEl = document.getElementById('mapCards');
   const diffRowEl = document.getElementById('diffRow');
 
-  // Map cards (with the per-map lifetime record line)
-  for (const map of MAPS) {
+  // Map cards (with the per-map lifetime record line). Story-campaign
+  // maps (meta.missionOnly) stay hidden here — they load via missions.
+  for (const map of MAPS.filter((m) => !m.missionOnly)) {
     const card = document.createElement('div');
     card.className = 'mapCard' + (map.id === setup.mapId ? ' selected' : '');
     card.dataset.mapId = map.id;

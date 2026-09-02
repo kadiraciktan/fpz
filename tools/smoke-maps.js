@@ -22,7 +22,7 @@ globalThis.document = {
 
 const { createScene } = await import('../src/maps/index.js');
 
-for (const id of ['street', 'factory', 'bunker', 'nacht']) {
+for (const id of ['street', 'factory', 'bunker', 'nacht', 'konvoy', 'montaj', 'reaktor', 'sunak']) {
   const t0 = performance.now();
   const built = createScene(id);
   const ms = (performance.now() - t0).toFixed(0);
